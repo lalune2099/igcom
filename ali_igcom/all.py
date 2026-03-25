@@ -121,28 +121,12 @@ TZ_UTC = pytz.UTC
 # 2) Step 1 - IG抓取：你的原逻辑（全量1h+30Min，不过滤不去重，标注Resolution，索引转伦敦时间）
 # =============================================================================
 
-# # IG账户配置（替换为实际信息）
-#all
-# class IGConfig:
-#     username = 'ZHONSH31795110'
-#     password = 'Zsy2713468YY'
-#     api_key = '2b4b1419858c86e1d3648b221921d27ab4c74962'
-#     acc_type = "LIVE"
-
-#all2
+# IG账户配置（替换为实际信息）
 class IGConfig:
-    username = 'ZSY2713468'
+    username = 'ZHONSH31795110'
     password = 'Zsy2713468YY'
-    api_key = 'a509e10e3cf38483b4f5f4dd333972674328a1fa'
+    api_key = '2b4b1419858c86e1d3648b221921d27ab4c74962'
     acc_type = "LIVE"
-
-
-# #all3
-# class IGConfig:
-#     username = 'Lalune20999'
-#     password = 'Yj123456@'
-#     api_key = 'd23ccdabe844c198fa46accfe03820af315dab52'
-#     acc_type = "LIVE"
 
 EPIC_TO_NAME = {
     "IX.D.SPTRD.IFMM.IP": "US 500 Cash ($1)",
@@ -273,7 +257,7 @@ def get_multiple_historical_prices_full(
             end_date = end_date.astimezone(TZ_BEIJING)
 
     if start_date is None:
-        start_date = end_date - timedelta(days=2)  # 北京时间减N天，不重置时分秒
+        start_date = end_date - timedelta(days=days)  # 北京时间减N天，不重置时分秒
     else:
         if not start_date.tzinfo:
             start_date = TZ_BEIJING.localize(start_date)
@@ -394,7 +378,11 @@ def update_template_dates_uk(TARGET_FILE: str, OUTPUT_FILE: str):
     """更新模板日期（基于英国时间）"""
     uk_now = datetime.now(TZ_LONDON)
     today_str = uk_now.strftime("%Y/%m/%d")
-    yesterday_str = (uk_now - timedelta(days=1)).strftime("%Y/%m/%d")
+    # 【新增逻辑】：如果是周一 (weekday() == 0)，则“昨天”算作上周五 (减3天)
+    if uk_now.weekday() == 0:
+        yesterday_str = (uk_now - timedelta(days=3)).strftime("%Y/%m/%d")
+    else:
+        yesterday_str = (uk_now - timedelta(days=1)).strftime("%Y/%m/%d")
 
     print("======================================")
     print("✅ Step 2/5: 更新模板日期（英国时间 Europe/London）")
@@ -695,24 +683,8 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
                     )
 
                 else:
-                    # 20:00用19:00补数据
-                    if ts.hour == 20 and ts.minute == 0:
-                        ts_1900 = ts.replace(hour=19, minute=0)
-                        if ts_1900 in df.index:
-                            close_value = df.loc[ts_1900, "Close"]
-                            if hasattr(close_value, "iloc"):
-                                close_value = close_value.iloc[0]
-                            close_value = float(close_value)
-
-                            ws.cell(row=row, column=col).value = close_value
-                            print(
-                                f"    调整：20:00 数据使用 19:00 的 Close 值：{close_value} "
-                                f"已写入 {sheet_name}!{ws.cell(row=row, column=col).coordinate}"
-                            )
-                        else:
-                            print(f"    ⚠ {product_header} 20:00 数据缺失，且19:00也没有数据，不写入。")
-                    else:
-                        print(f"    ⚠ {product_header} 缺少 {ts} 的数据，不写入。")
+                    # 如果找不到数据，无论几点，直接打印警告并跳过，不再用其他时间填补
+                    print(f"    ⚠ {product_header} 缺少 {ts} 的数据，不写入。")
 
     wb.save(output_file)
     print(f"\n🎉 Step 4 完成：已保存为 -> {output_file}\n")
@@ -805,7 +777,14 @@ def main():
 
     
 
-    days = 2  # 抓取近2天（48小时）数据
+    # 明确指定获取伦敦时间，再看伦敦现在是星期几
+    current_weekday = datetime.now(TZ_LONDON).weekday()
+    
+    if current_weekday == 0:
+        days = 4
+    else:
+        days = 2
+
     all_data, output_dir_abs, full_excel_abs = get_multiple_historical_prices_full(
         epic_list=epic_list,
         start_date=None,
