@@ -83,9 +83,8 @@ FILTER_30MIN_TIMES = {"18:00", "18:30"}
 
 # （可选）是否发送邮件
 SEND_EMAIL = True
-# SEND_EMAIL = False
 
-# # ========== 多收件人列表（按需修改） ==========
+# ========== 多收件人列表（按需修改） ==========
 # RECEIVE_USR_LIST = [
     
 #     '18826728999@139.com'
@@ -123,12 +122,33 @@ TZ_UTC = pytz.UTC
 # =============================================================================
 
 # IG账户配置（替换为实际信息）
+# all.py
 class IGConfig:
-    username = 'xieminggen'
-    password = 'Yj123456@'
-    api_key = 'bf5ee1e941fdad60a9386357f54923dc56f369ff'
+    username = 'ZHONSH31795110'
+    password = 'Zsy2713468YY'
+    api_key = '2b4b1419858c86e1d3648b221921d27ab4c74962'
     acc_type = "LIVE"
 
+# all2.py
+# class IGConfig:
+#     username = 'ZSY2713468'
+#     password = 'Zsy2713468YY'
+#     api_key = 'a509e10e3cf38483b4f5f4dd333972674328a1fa'
+#     acc_type = "LIVE"
+
+# all3.py
+# class IGConfig:
+#     username = 'Lalune20999'
+#     password = 'Yj123456@'
+#     api_key = 'd23ccdabe844c198fa46accfe03820af315dab52'
+#     acc_type = "LIVE"
+
+# allMon.py
+# class IGConfig:
+#     username = 'xieminggen'
+#     password = 'Yj123456@'
+#     api_key = 'bf5ee1e941fdad60a9386357f54923dc56f369ff'
+#     acc_type = "LIVE"
 
 EPIC_TO_NAME = {
     "IX.D.SPTRD.IFMM.IP": "US 500 Cash ($1)",
@@ -161,53 +181,96 @@ def safe_sheet_name(name: str) -> str:
     return name[:31]
 
 
+# def safe_mid_prices(prices, version):
+#     """仅保留Close中间价，时间转换为英区时间（你的原逻辑）"""
+#     if len(prices) == 0:
+#         raise Exception("Historical price data not found")
+
+#     df = json_normalize(prices)
+
+#     if version == "3":
+#         df = df.set_index("snapshotTimeUTC")
+#         df = df.drop(columns=["snapshotTime"], errors="ignore")
+#         df.index = pd.to_datetime(df.index, format="ISO8601")
+#     else:
+#         df = df.set_index("snapshotTime")
+#         from trading_ig.utils import DATE_FORMATS
+
+#         date_format = DATE_FORMATS[int(version)]
+#         df.index = pd.to_datetime(df.index, format=date_format)
+
+#     # UTC转英区时间（仅用pytz，兼容Python3.8）
+#     df.index = df.index.tz_localize(TZ_UTC).tz_convert(TZ_LONDON).tz_localize(None)
+#     df.index.name = "DateTime (London)"
+
+#     df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
+
+#     drop_cols = [
+#         "openPrice.lastTraded",
+#         "closePrice.lastTraded",
+#         "highPrice.lastTraded",
+#         "lowPrice.lastTraded",
+#         "openPrice.bid",
+#         "openPrice.ask",
+#         "closePrice.bid",
+#         "closePrice.ask",
+#         "highPrice.bid",
+#         "highPrice.ask",
+#         "lowPrice.bid",
+#         "lowPrice.ask",
+#         "lastTradedVolume",
+#     ]
+#     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+#     return df
+
 def safe_mid_prices(prices, version):
-    """仅保留Close中间价，时间转换为英区时间（你的原逻辑）"""
+    """
+    终极清洗站：应对 IG API 东八区账号双重减时 Bug！
+    直接废弃有毒的 snapshotTimeUTC，强制使用 snapshotTime。
+    """
     if len(prices) == 0:
         raise Exception("Historical price data not found")
 
     df = json_normalize(prices)
 
+    # 1. 无视 IG 官方的 Bug 字段，强制统一使用 snapshotTime
+    if "snapshotTime" not in df.columns:
+        if "snapshotTimeUTC" in df.columns:
+            df["snapshotTime"] = df["snapshotTimeUTC"]  # 极端保底
+            
+    df = df.set_index("snapshotTime")
+    
+    # 直接丢弃那个被错误减去 8 小时的有毒列
+    df = df.drop(columns=["snapshotTimeUTC"], errors="ignore")
 
-    # 🚀 修复 1：无视版本号，直接侦测数据列，优先使用绝对安全的 UTC 字段
-    if "snapshotTimeUTC" in df.columns:
-        df = df.set_index("snapshotTimeUTC")
-        df = df.drop(columns=["snapshotTime"], errors="ignore")
-        df.index = pd.to_datetime(df.index, utc=True)
+    # 2. 时间格式化：此时的时间实际上是正确的 UTC 时间
+    df.index = pd.to_datetime(df.index)
+    
+    # 盖上 UTC 时区戳
+    if df.index.tz is None:
+        df.index = df.index.tz_localize(TZ_UTC)
         
-
-    elif "snapshotTime" in df.columns:
-        df = df.set_index("snapshotTime")
-        df.index = pd.to_datetime(df.index)
-        
-        # 🚀 修正：IG 返回的 snapshotTime 实际上就是 UTC 时间（只是没后缀）
-        # 我们直接给它贴上 UTC 的标签，不再转来转去了！
-        if df.index.tz is None:
-            df.index = df.index.tz_localize(TZ_UTC)
-
-    # 此时 df.index 已经统一化为绝对的 UTC 时间，安稳转换为伦敦时间
+    # 3. 转换为伦敦时间（重要：这样写能自动适应英国 3月底的夏令时切换）
     df.index = df.index.tz_convert(TZ_LONDON).tz_localize(None)
-    df.index.name = "DateTime (London)"
 
+    # 命名列名，准备写表
+    df.index.name = "DateTime (London)"
+    
+    # 4. 计算中间价
     df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
 
+    # 丢弃多余的列
     drop_cols = [
-        "openPrice.lastTraded",
-        "closePrice.lastTraded",
-        "highPrice.lastTraded",
-        "lowPrice.lastTraded",
-        "openPrice.bid",
-        "openPrice.ask",
-        "closePrice.bid",
-        "closePrice.ask",
-        "highPrice.bid",
-        "highPrice.ask",
-        "lowPrice.bid",
-        "lowPrice.ask",
-        "lastTradedVolume",
+        "openPrice.lastTraded", "closePrice.lastTraded", "highPrice.lastTraded", "lowPrice.lastTraded",
+        "openPrice.bid", "openPrice.ask", "closePrice.bid", "closePrice.ask",
+        "highPrice.bid", "highPrice.ask", "lowPrice.bid", "lowPrice.ask", "lastTradedVolume",
     ]
     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+    
     return df
+
+
+    
 
 
 def fetch_data_by_resolution(ig_service, epic: str, resolution: str, start_date_str: str, end_date_str: str) -> pd.DataFrame:
@@ -232,13 +295,13 @@ def get_multiple_historical_prices_full(
     epic_list,
     start_date=None,
     end_date=None,
-    days=2,  # 抓取北京时间2天内数据（不重置时分秒）
+    days=2,  # 这里的默认值留着做保底，但在调用时会被覆盖
     save_individual=True,
     save_combined=True,
 ):
     """
     原逻辑保留，修改点：
-    1. start_date = 北京时间end_date - N天（不重置为00:00）
+    1. start_date = 北京时间end_date - N天（已修改：不写死2，用传入的days）
     2. 直接传北京时间字符串给IG API（ISO8601格式）
     3. 全量1h+30Min、不过滤、标注Resolution、索引转伦敦时间不变
     """
@@ -265,20 +328,17 @@ def get_multiple_historical_prices_full(
             end_date = end_date.astimezone(TZ_BEIJING)
 
     if start_date is None:
-        start_date = end_date - timedelta(days=days)  # 北京时间减N天，不重置时分秒
+        # 【修改 1】：去掉写死的 day=2，使用传入的 days 变量
+        start_date = end_date - timedelta(days=days)  
     else:
         if not start_date.tzinfo:
             start_date = TZ_BEIJING.localize(start_date)
         else:
             start_date = start_date.astimezone(TZ_BEIJING)
 
-    # ========== 修正：必须先转为绝对 UTC，再传字符串给 IG API ==========
-    start_date_utc_req = start_date.astimezone(TZ_UTC)
-    end_date_utc_req = end_date.astimezone(TZ_UTC)
-    
-    start_date_str = start_date_utc_req.strftime("%Y-%m-%dT%H:%M:%S")
-    end_date_str = end_date_utc_req.strftime("%Y-%m-%dT%H:%M:%S")
-
+    # ========== 直接传北京时间字符串给API（ISO8601格式） ==========
+    start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S")
+    end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%S")
 
     # 北京时间转伦敦时间/UTC（仅用于日志打印）
     start_date_london = start_date.astimezone(TZ_LONDON)
@@ -390,7 +450,8 @@ def update_template_dates_uk(TARGET_FILE: str, OUTPUT_FILE: str):
     """更新模板日期（基于英国时间）"""
     uk_now = datetime.now(TZ_LONDON)
     today_str = uk_now.strftime("%Y/%m/%d")
-    # 【新增逻辑】：如果是周一 (weekday() == 0)，则“昨天”算作上周五 (减3天)
+    
+    # 【修改 4】：新增周一周五的模板日期回溯逻辑
     if uk_now.weekday() == 0:
         yesterday_str = (uk_now - timedelta(days=3)).strftime("%Y/%m/%d")
     else:
@@ -695,7 +756,7 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
                     )
 
                 else:
-                    # 如果找不到数据，无论几点，直接打印警告并跳过，不再用其他时间填补
+                    # 【修改 2】：去掉了 20 时用 19 时代替的 copy 逻辑
                     print(f"    ⚠ {product_header} 缺少 {ts} 的数据，不写入。")
 
     wb.save(output_file)
@@ -710,12 +771,6 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
 def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_path, email_title, content):
     """
     支持多收件人的Gmail邮件发送函数
-    :param send_usr: 发件人邮箱
-    :param send_pwd: 发件人授权码
-    :param receive_usr_list: 收件人列表
-    :param attachment_path: 附件路径
-    :param email_title: 邮件标题
-    :param content: 邮件正文
     """
     print("======================================")
     print("✅ Step 5/5: 发送 Gmail 邮件（含附件）")
@@ -787,11 +842,8 @@ def main():
         "CS.D.USDMXN.CFD.IP",
     ]
 
-    
-
-    # 明确指定获取伦敦时间，再看伦敦现在是星期几
+    # 【修改 3】：新增周一周五的数据连接（伦敦时判断），不再写死 days = 2
     current_weekday = datetime.now(TZ_LONDON).weekday()
-    
     if current_weekday == 0:
         days = 4
     else:
@@ -801,7 +853,7 @@ def main():
         epic_list=epic_list,
         start_date=None,
         end_date=None,
-        days=days,
+        days=days,  # 将动态判断的天数传入
         save_individual=True,
         save_combined=True,
     )
