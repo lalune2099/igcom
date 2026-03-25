@@ -83,8 +83,9 @@ FILTER_30MIN_TIMES = {"18:00", "18:30"}
 
 # （可选）是否发送邮件
 SEND_EMAIL = True
+# SEND_EMAIL = False
 
-# ========== 多收件人列表（按需修改） ==========
+# # ========== 多收件人列表（按需修改） ==========
 # RECEIVE_USR_LIST = [
     
 #     '18826728999@139.com'
@@ -123,10 +124,11 @@ TZ_UTC = pytz.UTC
 
 # IG账户配置（替换为实际信息）
 class IGConfig:
-    username = 'ZHONSH31795110'
-    password = 'Zsy2713468YY'
-    api_key = '2b4b1419858c86e1d3648b221921d27ab4c74962'
+    username = 'xieminggen'
+    password = 'Yj123456@'
+    api_key = 'bf5ee1e941fdad60a9386357f54923dc56f369ff'
     acc_type = "LIVE"
+
 
 EPIC_TO_NAME = {
     "IX.D.SPTRD.IFMM.IP": "US 500 Cash ($1)",
@@ -166,19 +168,25 @@ def safe_mid_prices(prices, version):
 
     df = json_normalize(prices)
 
-    if version == "3":
+
+    # 🚀 修复 1：无视版本号，直接侦测数据列，优先使用绝对安全的 UTC 字段
+    if "snapshotTimeUTC" in df.columns:
         df = df.set_index("snapshotTimeUTC")
         df = df.drop(columns=["snapshotTime"], errors="ignore")
-        df.index = pd.to_datetime(df.index, format="ISO8601")
-    else:
+        df.index = pd.to_datetime(df.index, utc=True)
+        
+
+    elif "snapshotTime" in df.columns:
         df = df.set_index("snapshotTime")
-        from trading_ig.utils import DATE_FORMATS
+        df.index = pd.to_datetime(df.index)
+        
+        # 🚀 修正：IG 返回的 snapshotTime 实际上就是 UTC 时间（只是没后缀）
+        # 我们直接给它贴上 UTC 的标签，不再转来转去了！
+        if df.index.tz is None:
+            df.index = df.index.tz_localize(TZ_UTC)
 
-        date_format = DATE_FORMATS[int(version)]
-        df.index = pd.to_datetime(df.index, format=date_format)
-
-    # UTC转英区时间（仅用pytz，兼容Python3.8）
-    df.index = df.index.tz_localize(TZ_UTC).tz_convert(TZ_LONDON).tz_localize(None)
+    # 此时 df.index 已经统一化为绝对的 UTC 时间，安稳转换为伦敦时间
+    df.index = df.index.tz_convert(TZ_LONDON).tz_localize(None)
     df.index.name = "DateTime (London)"
 
     df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
@@ -264,9 +272,13 @@ def get_multiple_historical_prices_full(
         else:
             start_date = start_date.astimezone(TZ_BEIJING)
 
-    # ========== 直接传北京时间字符串给API（ISO8601格式） ==========
-    start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S")
-    end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%S")
+    # ========== 修正：必须先转为绝对 UTC，再传字符串给 IG API ==========
+    start_date_utc_req = start_date.astimezone(TZ_UTC)
+    end_date_utc_req = end_date.astimezone(TZ_UTC)
+    
+    start_date_str = start_date_utc_req.strftime("%Y-%m-%dT%H:%M:%S")
+    end_date_str = end_date_utc_req.strftime("%Y-%m-%dT%H:%M:%S")
+
 
     # 北京时间转伦敦时间/UTC（仅用于日志打印）
     start_date_london = start_date.astimezone(TZ_LONDON)
