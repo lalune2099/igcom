@@ -29,10 +29,15 @@ class OutputPathTests(unittest.TestCase):
                 self.assertIn("OUTPUT_ROOT_DIR", names)
                 self.assertIn("RUN_DATE", names)
                 self.assertIn("IG变化率表格(英区).xlsx", text)
+                self.assertIn("UPDATED_TEMPLATE_FILE_NAME", names)
+                self.assertIn("FILLED_OUTPUT_FILE_NAME", names)
+                self.assertIn('UPDATED_TEMPLATE_FILE = os.path.join(output_dir_abs, UPDATED_TEMPLATE_FILE_NAME)', text)
+                self.assertIn('FILLED_OUTPUT_FILE = os.path.join(output_dir_abs, FILLED_OUTPUT_FILE_NAME)', text)
                 self.assertIn("IG变化率_模版更新_", text)
                 self.assertIn('f"IG变化率_{RUN_DATE}.xlsx"', text)
                 self.assertIn('os.path.join(OUTPUT_ROOT_DIR, f"historical_data_', text)
                 self.assertIn("os.makedirs(OUTPUT_ROOT_DIR, exist_ok=True)", text)
+                self.assertNotIn('os.path.join(OUTPUT_ROOT_DIR, f"IG变化率_', text)
 
 
 if __name__ == "__main__":

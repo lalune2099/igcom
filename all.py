@@ -53,10 +53,10 @@ RUN_DATE = datetime.now().strftime("%Y%m%d")
 TEMPLATE_FILE = os.path.join(BASE_DIR, "IG变化率表格(英区).xlsx")
 
 # Step2 输出：日期已更新的模板
-UPDATED_TEMPLATE_FILE = os.path.join(OUTPUT_ROOT_DIR, f"IG变化率_模版更新_{RUN_DATE}.xlsx")
+UPDATED_TEMPLATE_FILE_NAME = f"IG变化率_模版更新_{RUN_DATE}.xlsx"
 
 # Step4 输出：最终填好数据的表
-FILLED_OUTPUT_FILE = os.path.join(OUTPUT_ROOT_DIR, f"IG变化率_{RUN_DATE}.xlsx")
+FILLED_OUTPUT_FILE_NAME = f"IG变化率_{RUN_DATE}.xlsx"
 
 # Step3 输出：筛选后的历史数据Excel（会自动放到抓取输出目录里）
 FILTERED_DATA_EXCEL_NAME = "All_Products_Full_1h_30min_filtered.xlsx"
@@ -890,6 +890,9 @@ def main():
     print(f"📄 全量合并Excel : {full_excel_abs}\n")
 
     # Step 2: 更新模板日期
+    UPDATED_TEMPLATE_FILE = os.path.join(output_dir_abs, UPDATED_TEMPLATE_FILE_NAME)
+    FILLED_OUTPUT_FILE = os.path.join(output_dir_abs, FILLED_OUTPUT_FILE_NAME)
+
     update_template_dates_uk(TEMPLATE_FILE, UPDATED_TEMPLATE_FILE)
 
     # Step 3: 筛选数据
