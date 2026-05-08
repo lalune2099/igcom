@@ -42,9 +42,9 @@
 
 | 运行输出 | 说明 |
 | --- | --- |
-| `historical_data_*/` | 每次抓取数据的输出目录 |
-| `IG变化率表格_已更新.xlsx` | 日期更新后的模板 |
-| `IG变化率表格_已填好_05_07_15_20时.xlsx` | 最终填好数据的结果表 |
+| `outputs/historical_data_*/` | 每次抓取数据的输出目录 |
+| `outputs/IG变化率_模版更新_YYYYMMDD.xlsx` | 日期更新后的模板 |
+| `outputs/IG变化率_YYYYMMDD.xlsx` | 最终填好数据的结果表 |
 | `__pycache__/` | Python 缓存 |
 
 ## 配置方式

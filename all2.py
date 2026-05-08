@@ -42,14 +42,21 @@ from config import get_gmail_config, get_ig_account
 # 0) 全局开关 & 路径配置（你按需改这里就行）
 # =============================================================================
 
-# 模板原文件（未改日期）
-TEMPLATE_FILE = '/igcom/IG变化率表格(英区).xlsx'
+# 服务器根目录
+BASE_DIR = "/igcom"
+
+# 运行输出目录：抓取数据、更新模板、最终结果都放这里
+OUTPUT_ROOT_DIR = os.path.join(BASE_DIR, "outputs")
+RUN_DATE = datetime.now().strftime("%Y%m%d")
+
+# 模板原文件（未改日期，保留在 /igcom 根目录）
+TEMPLATE_FILE = os.path.join(BASE_DIR, "IG变化率表格(英区).xlsx")
 
 # Step2 输出：日期已更新的模板
-UPDATED_TEMPLATE_FILE = '/igcom/IG变化率表格_已更新.xlsx'
+UPDATED_TEMPLATE_FILE = os.path.join(OUTPUT_ROOT_DIR, f"IG变化率_模版更新_{RUN_DATE}.xlsx")
 
 # Step4 输出：最终填好数据的表
-FILLED_OUTPUT_FILE = '/igcom/IG变化率表格_已填好_05_07_15_20时.xlsx'
+FILLED_OUTPUT_FILE = os.path.join(OUTPUT_ROOT_DIR, f"IG变化率_{RUN_DATE}.xlsx")
 
 # Step3 输出：筛选后的历史数据Excel（会自动放到抓取输出目录里）
 FILTERED_DATA_EXCEL_NAME = "All_Products_Full_1h_30min_filtered.xlsx"
@@ -382,7 +389,7 @@ def get_multiple_historical_prices_full(
         ig_service.create_session()
         print("✅ IG Session Created Successfully")
 
-        output_dir = f"historical_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output_dir = os.path.join(OUTPUT_ROOT_DIR, f"historical_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         os.makedirs(output_dir, exist_ok=True)
         output_dir_abs = os.path.abspath(output_dir)
         print(f"📁 Output Directory (Step1 outputs): {output_dir_abs}")
@@ -838,7 +845,7 @@ def main():
     print("\n" + "=" * 70)
     print("🚀 一键跑完主程序启动")
     print("=" * 70)
-
+    os.makedirs(OUTPUT_ROOT_DIR, exist_ok=True)
     # Step 1: 抓取全量数据
     epic_list = [
         "IX.D.SPTRD.IFMM.IP",

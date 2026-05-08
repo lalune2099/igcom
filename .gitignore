@@ -4,5 +4,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 apikey.txt
+outputs/
 historical_data_*/
+IG变化率_模版更新_*.xlsx
+IG变化率_[0-9]*.xlsx
 ig_accumulated_1h_data_*.xlsx
