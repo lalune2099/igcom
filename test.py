@@ -1,58 +1,56 @@
 # -*- coding: utf-8 -*-
 """
-一键跑完主程序（按你的原逻辑串联）：
-Step 1) IG 抓取全量数据（1h + 30Min，全量不筛选不去重，标注Resolution，索引转伦敦时间）
+改动目标（已实现）：
+- 每天运行一次，只抓取“昨天（伦敦时间）”的数据（00:00-24:00）
+- 抓到的数据追加到一个“累计总表 Excel”里，避免重复抓取导致API额度不足
+- 后续更新模板/筛选/填充/发邮件逻辑保持你的原方式
+
+Step 1) IG 增量抓取（仅昨天 London day，1h + 30Min，全量不去重，标注Resolution，索引为 London 无时区）
 Step 2) 更新模板日期（8个sheet：05/07/15/20时 + 05/07/15/20变化率）
-Step 3) 从全量数据筛选出模板需要的时间点（1h: 05/07/15/19/20；30Min: 18:00/18:30）
+Step 3) 从“累计总表”筛选出模板需要的时间点
 Step 4) 把筛选后的 Close 写入模板的 05/07/15/20时 sheet
 Step 5) （可选）Gmail 发送附件（支持多收件人）
-
-说明：适配Python 3.8，移除zoneinfo依赖，仅使用pytz处理时区
 """
 
 import os
 import warnings
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from pathlib import Path
 
 import pandas as pd
 from pandas import json_normalize
 
-# ========== 依赖：IG抓取 ==========
 from trading_ig import IGService
 from trading_ig.rest import ApiExceededException
 from tenacity import Retrying, wait_exponential, retry_if_exception_type
 
-# ========== 依赖：模板处理 / 写入 ==========
 from openpyxl import load_workbook
 
-# ========== 时区（仅用pytz，兼容Python3.8） ==========
 import pytz
 
-# ========== 邮件（可选） ==========
 from smtplib import SMTP
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-
 from config import get_gmail_config, get_ig_account
 
 
 # =============================================================================
-# 0) 全局开关 & 路径配置（你按需改这里就行）
+# 0) 全局路径配置
 # =============================================================================
 
 # 模板原文件（未改日期）
 TEMPLATE_FILE = '/igcom/IG变化率表格(英区).xlsx'
-
 # Step2 输出：日期已更新的模板
 UPDATED_TEMPLATE_FILE = '/igcom/IG变化率表格_已更新.xlsx'
-
 # Step4 输出：最终填好数据的表
 FILLED_OUTPUT_FILE = '/igcom/IG变化率表格_已填好_05_07_15_20时.xlsx'
 
-# Step3 输出：筛选后的历史数据Excel（会自动放到抓取输出目录里）
+# ✅ 新增：累计总表（核心）
+ACCUMULATED_EXCEL_FILE = '/igcom/ig_accumulated_full_1h_30min.xlsx'
+
+# Step3 输出：筛选后的历史数据Excel（会自动放到输出目录里）
 FILTERED_DATA_EXCEL_NAME = "All_Products_Full_1h_30min_filtered.xlsx"
 
 # Step4 输入：你筛选后数据的“每产品sheet”的映射（保持你原逻辑）
@@ -86,8 +84,11 @@ FILTER_30MIN_TIMES = {"18:00", "18:30"}
 # （可选）是否发送邮件
 SEND_EMAIL = True
 
+# Gmail recipients are loaded from GMAIL_RECIPIENTS when SEND_EMAIL is enabled.
+
+
 # =============================================================================
-# 1) 日志与时区（仅用pytz，兼容Python3.8）
+# 1) 日志与时区
 # =============================================================================
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -101,16 +102,19 @@ console_handler.setFormatter(formatter)
 logger.handlers = []
 logger.addHandler(console_handler)
 
-# 仅使用pytz定义时区（兼容Python3.8）
 TZ_BEIJING = pytz.timezone("Asia/Shanghai")
 TZ_LONDON = pytz.timezone("Europe/London")
 TZ_UTC = pytz.UTC
 
 
 # =============================================================================
-# 2) Step 1 - IG抓取：你的原逻辑（全量1h+30Min，不过滤不去重，标注Resolution，索引转伦敦时间）
+# 2) Step 1 - IG 增量抓取：只抓“昨天 London day”
 # =============================================================================
 
+
+
+
+# IG账户配置：默认使用当前脚本对应的账号，可用 IG_PROFILE 覆盖。
 DEFAULT_IG_PROFILE = "ACCOUNT1"
 _ig_account = get_ig_account(DEFAULT_IG_PROFILE)
 
@@ -120,7 +124,6 @@ class IGConfig:
     password = _ig_account.password
     api_key = _ig_account.api_key
     acc_type = _ig_account.acc_type
-
 EPIC_TO_NAME = {
     "IX.D.SPTRD.IFMM.IP": "US 500 Cash ($1)",
     "IX.D.HANGSENG.IFU.IP": "Hong Kong HS50 Cash ($1)",
@@ -141,7 +144,6 @@ EPIC_TO_NAME = {
     "CS.D.USDMXN.CFD.IP": "USD/MXN",
 }
 
-# 30分钟粒度抓取范围（全天）
 HALF_HOUR_RESOLUTION_RANGE = {"start_hour": 0, "end_hour": 23}
 
 
@@ -152,100 +154,41 @@ def safe_sheet_name(name: str) -> str:
     return name[:31]
 
 
-# def safe_mid_prices(prices, version):
-#     """仅保留Close中间价，时间转换为英区时间（你的原逻辑）"""
-#     if len(prices) == 0:
-#         raise Exception("Historical price data not found")
-
-#     df = json_normalize(prices)
-
-#     if version == "3":
-#         df = df.set_index("snapshotTimeUTC")
-#         df = df.drop(columns=["snapshotTime"], errors="ignore")
-#         df.index = pd.to_datetime(df.index, format="ISO8601")
-#     else:
-#         df = df.set_index("snapshotTime")
-#         from trading_ig.utils import DATE_FORMATS
-
-#         date_format = DATE_FORMATS[int(version)]
-#         df.index = pd.to_datetime(df.index, format=date_format)
-
-#     # UTC转英区时间（仅用pytz，兼容Python3.8）
-#     df.index = df.index.tz_localize(TZ_UTC).tz_convert(TZ_LONDON).tz_localize(None)
-#     df.index.name = "DateTime (London)"
-
-#     df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
-
-#     drop_cols = [
-#         "openPrice.lastTraded",
-#         "closePrice.lastTraded",
-#         "highPrice.lastTraded",
-#         "lowPrice.lastTraded",
-#         "openPrice.bid",
-#         "openPrice.ask",
-#         "closePrice.bid",
-#         "closePrice.ask",
-#         "highPrice.bid",
-#         "highPrice.ask",
-#         "lowPrice.bid",
-#         "lowPrice.ask",
-#         "lastTradedVolume",
-#     ]
-#     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
-#     return df
-
 def safe_mid_prices(prices, version):
-    """
-    终极清洗站：应对 IG API 东八区账号双重减时 Bug！
-    直接废弃有毒的 snapshotTimeUTC，强制使用 snapshotTime。
-    """
+    """仅保留Close中间价，时间转换为伦敦时间（无时区）"""
     if len(prices) == 0:
         raise Exception("Historical price data not found")
 
     df = json_normalize(prices)
 
-    # 1. 无视 IG 官方的 Bug 字段，强制统一使用 snapshotTime
-    if "snapshotTime" not in df.columns:
-        if "snapshotTimeUTC" in df.columns:
-            df["snapshotTime"] = df["snapshotTimeUTC"]  # 极端保底
+    if version == "3":
+        df = df.set_index("snapshotTimeUTC")
+        df = df.drop(columns=["snapshotTime"], errors="ignore")
+        df.index = pd.to_datetime(df.index, format="ISO8601")
+    else:
+        df = df.set_index("snapshotTime")
+        from trading_ig.utils import DATE_FORMATS
+        date_format = DATE_FORMATS[int(version)]
+        df.index = pd.to_datetime(df.index, format=date_format)
 
-    df = df.set_index("snapshotTime")
-
-    # 直接丢弃那个被错误减去 8 小时的有毒列
-    df = df.drop(columns=["snapshotTimeUTC"], errors="ignore")
-
-    # 2. 时间格式化：此时的时间实际上是正确的 UTC 时间
-    df.index = pd.to_datetime(df.index)
-
-    # 盖上 UTC 时区戳
-    if df.index.tz is None:
-        df.index = df.index.tz_localize(TZ_UTC)
-
-    # 3. 转换为伦敦时间（重要：这样写能自动适应英国 3月底的夏令时切换）
-    df.index = df.index.tz_convert(TZ_LONDON).tz_localize(None)
-
-    # 命名列名，准备写表
+    # UTC -> London -> drop tz
+    df.index = df.index.tz_localize(TZ_UTC).tz_convert(TZ_LONDON).tz_localize(None)
     df.index.name = "DateTime (London)"
 
-    # 4. 计算中间价
     df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
 
-    # 丢弃多余的列
     drop_cols = [
         "openPrice.lastTraded", "closePrice.lastTraded", "highPrice.lastTraded", "lowPrice.lastTraded",
         "openPrice.bid", "openPrice.ask", "closePrice.bid", "closePrice.ask",
-        "highPrice.bid", "highPrice.ask", "lowPrice.bid", "lowPrice.ask", "lastTradedVolume",
+        "highPrice.bid", "highPrice.ask", "lowPrice.bid", "lowPrice.ask",
+        "lastTradedVolume",
     ]
     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
-
     return df
 
 
-
-
-
 def fetch_data_by_resolution(ig_service, epic: str, resolution: str, start_date_str: str, end_date_str: str) -> pd.DataFrame:
-    """按指定粒度抓取单个产品数据，并标注粒度（你的原逻辑）"""
+    """按指定粒度抓取单个产品数据，并标注粒度"""
     try:
         response = ig_service.fetch_historical_prices_by_epic(
             epic=epic,
@@ -262,20 +205,68 @@ def fetch_data_by_resolution(ig_service, epic: str, resolution: str, start_date_
         return pd.DataFrame()
 
 
-def get_multiple_historical_prices_full(
-    epic_list,
-    start_date=None,
-    end_date=None,
-    days=2,  # 这里的默认值留着做保底，但在调用时会被覆盖
-    save_individual=True,
-    save_combined=True,
-):
+def london_yesterday_range_to_beijing_api_strings():
     """
-    原逻辑保留，修改点：
-    1. start_date = 北京时间end_date - N天（已修改：不写死2，用传入的days）
-    2. 直接传北京时间字符串给IG API（ISO8601格式）
-    3. 全量1h+30Min、不过滤、标注Resolution、索引转伦敦时间不变
+    计算“昨天（伦敦日历日）00:00 到 今天（伦敦）00:00”
+    然后转换为北京时间，用作API入参字符串（不带时区，按你原来API方式）
     """
+    now_london = datetime.now(TZ_LONDON)
+
+    today_london_date = now_london.date()
+    yesterday_london_date = today_london_date - timedelta(days=1)
+
+    start_london = TZ_LONDON.localize(datetime.combine(yesterday_london_date, time(0, 0, 0)))
+    end_london = TZ_LONDON.localize(datetime.combine(today_london_date, time(0, 0, 0)))
+
+    start_bj = start_london.astimezone(TZ_BEIJING)
+    end_bj = end_london.astimezone(TZ_BEIJING)
+
+    start_str = start_bj.strftime("%Y-%m-%dT%H:%M:%S")
+    end_str = end_bj.strftime("%Y-%m-%dT%H:%M:%S")
+
+    return start_london, end_london, start_bj, end_bj, start_str, end_str
+
+
+def load_accumulated_excel(accumulated_path: str):
+    """读取累计总表（如果不存在返回None）"""
+    if not os.path.exists(accumulated_path):
+        return None
+
+    df_all = pd.read_excel(
+        accumulated_path,
+        sheet_name="All_Full_Data",
+        index_col="DateTime (London)",
+        parse_dates=["DateTime (London)"],
+    )
+    return df_all
+
+
+def save_accumulated_excel(accumulated_path: str, df_all: pd.DataFrame):
+    """保存累计总表（All_Full_Data + 每个产品sheet）"""
+    Path(os.path.dirname(accumulated_path)).mkdir(parents=True, exist_ok=True)
+
+    with pd.ExcelWriter(accumulated_path, engine="openpyxl") as writer:
+        df_all.sort_index().to_excel(writer, sheet_name="All_Full_Data", index=True)
+        for epic, g in df_all.groupby("Epic"):
+            sheet_name = safe_sheet_name(EPIC_TO_NAME.get(epic, epic))
+            g.sort_index().to_excel(writer, sheet_name=sheet_name, index=True)
+
+
+def fetch_yesterday_and_accumulate(epic_list, accumulated_excel_path: str):
+    """
+    ✅ 核心：只抓昨天伦敦日历日的数据，然后合并进累计总表
+    返回：累计总表路径（供Step3用）
+    """
+    start_london, end_london, start_bj, end_bj, start_str, end_str = london_yesterday_range_to_beijing_api_strings()
+
+    print("======================================")
+    print("✅ Step 1/5: IG 增量抓取（只抓昨天 London day）并写入累计总表")
+    print(f"📅 London Range : {start_london.strftime('%Y-%m-%d %H:%M:%S %Z')} -> {end_london.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"📅 Beijing Range: {start_bj.strftime('%Y-%m-%d %H:%M:%S %Z')} -> {end_bj.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"📤 API传入（北京时间字符串）: start={start_str}, end={end_str}")
+    print(f"📄 Accumulated Excel: {accumulated_excel_path}")
+    print("======================================\n")
+
     retryer = Retrying(wait=wait_exponential(), retry=retry_if_exception_type(ApiExceededException))
     ig_service = IGService(
         IGConfig.username,
@@ -286,79 +277,30 @@ def get_multiple_historical_prices_full(
         use_rate_limiter=True,
     )
 
-    all_data = {}
-    combined_data = []
-
-    # ========== 基于北京时间计算，不重置时间 ==========
-    if end_date is None:
-        end_date = datetime.now(TZ_BEIJING)  # 当前北京时间（带时区）
+    df_existing = load_accumulated_excel(accumulated_excel_path)
+    if df_existing is None:
+        print("ℹ️ 累计总表不存在，将新建。")
     else:
-        if not end_date.tzinfo:
-            end_date = TZ_BEIJING.localize(end_date)  # 补全时区
-        else:
-            end_date = end_date.astimezone(TZ_BEIJING)
+        print(f"✅ 已读取累计总表：{len(df_existing)} 条记录")
 
-    if start_date is None:
-        # 【修改 1】：去掉写死的 day=2，使用传入的 days 变量
-        start_date = end_date - timedelta(days=days)
-    else:
-        if not start_date.tzinfo:
-            start_date = TZ_BEIJING.localize(start_date)
-        else:
-            start_date = start_date.astimezone(TZ_BEIJING)
-
-    # ========== 直接传北京时间字符串给API（ISO8601格式） ==========
-    start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S")
-    end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%S")
-
-    # 北京时间转伦敦时间/UTC（仅用于日志打印）
-    start_date_london = start_date.astimezone(TZ_LONDON)
-    end_date_london = end_date.astimezone(TZ_LONDON)
-    start_date_utc = start_date.astimezone(TZ_UTC)
-    end_date_utc = end_date.astimezone(TZ_UTC)
-
-    print("======================================")
-    print("✅ Step 1/5: IG 抓取全量数据（1h + 30Min，保留全量，标注Resolution，伦敦时间索引）")
-    print(f"📅 抓取范围（北京时间）: {start_date.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📅 Date Range (London): {start_date_london.strftime('%Y-%m-%d %H:%M:%S')} to {end_date_london.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📅 Date Range (UTC)   : {start_date_utc.strftime('%Y-%m-%d %H:%M:%S')} to {end_date_utc.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📤 API传入时间（北京时间）: start={start_date_str}, end={end_date_str}")
-    print(f"📊 Total Products: {len(epic_list)}")
-    print("======================================\n")
-
-    output_dir_abs = None
-    combined_excel_path_abs = None
+    new_chunks = []
 
     try:
         ig_service.create_session()
         print("✅ IG Session Created Successfully")
 
-        output_dir = f"historical_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        os.makedirs(output_dir, exist_ok=True)
-        output_dir_abs = os.path.abspath(output_dir)
-        print(f"📁 Output Directory (Step1 outputs): {output_dir_abs}")
-
         for i, epic in enumerate(epic_list, 1):
             product_name = EPIC_TO_NAME.get(epic, epic)
             print(f"\n--- Fetching {i}/{len(epic_list)}: {product_name} ({epic}) ---")
 
-            print("🔹 Fetching 1h resolution data...")
-            df_1h = fetch_data_by_resolution(ig_service, epic, "1h", start_date_str, end_date_str)
-            if df_1h.empty:
-                print(f"⚠️ No 1h data for {product_name}")
-            else:
-                print(f"✅ 1h data fetched: {len(df_1h)} records")
+            df_1h = fetch_data_by_resolution(ig_service, epic, "1h", start_str, end_str)
+            df_30min = fetch_data_by_resolution(ig_service, epic, "30Min", start_str, end_str)
 
-            print("🔹 Fetching 30Min resolution data...")
-            df_30min = fetch_data_by_resolution(ig_service, epic, "30Min", start_date_str, end_date_str)
             if not df_30min.empty:
                 df_30min = df_30min[
                     (df_30min.index.hour >= HALF_HOUR_RESOLUTION_RANGE["start_hour"])
                     & (df_30min.index.hour <= HALF_HOUR_RESOLUTION_RANGE["end_hour"])
                 ]
-                print(f"✅ 30Min data fetched: {len(df_30min)} records")
-            else:
-                print("ℹ️ No 30Min data fetched")
 
             df_list = []
             if not df_1h.empty:
@@ -367,66 +309,54 @@ def get_multiple_historical_prices_full(
                 df_list.append(df_30min)
 
             if not df_list:
-                print(f"⚠️ No valid data for {product_name}, skip")
+                print("⚠️ 本产品昨天无数据，跳过")
                 continue
 
             df_combined = pd.concat(df_list).sort_index()
-            print(f"✅ Final merged data: {len(df_combined)} records (1h + 30Min full)")
+            df_combined["Product Name"] = product_name
+            df_combined["Epic"] = epic
 
-            df_final = df_combined.copy()
-            df_final["Product Name"] = product_name
-            df_final["Epic"] = epic
+            print(f"✅ 昨天新增记录数：{len(df_combined)}")
+            new_chunks.append(df_combined)
 
-            all_data[epic] = df_final
-            combined_data.append(df_final)
+        if not new_chunks:
+            print("\n⚠️ 昨天所有产品都没拿到数据：累计总表不更新。")
+            return accumulated_excel_path
 
-            if save_individual:
-                safe_filename = safe_sheet_name(product_name).replace(" ", "_").replace("$", "USD")
-                csv_path = os.path.join(output_dir, f"{safe_filename}_full_1h_30min_{datetime.now().strftime('%Y%m%d')}.csv")
-                df_final.to_csv(csv_path, encoding="utf-8")
-                print(f"💾 Saved CSV: {os.path.abspath(csv_path)}")
+        df_new_all = pd.concat(new_chunks).sort_index()
 
-        if save_combined and combined_data:
-            df_combined_all = pd.concat(combined_data, ignore_index=False).sort_index()
+        # 合并到累计总表
+        if df_existing is None or df_existing.empty:
+            df_merged = df_new_all
+        else:
+            df_merged = pd.concat([df_existing, df_new_all]).sort_index()
+            # 去重：同一个(时间, Epic, Resolution)出现重复时，保留最后一次
+            df_merged = df_merged.reset_index()
+            df_merged = df_merged.drop_duplicates(subset=["DateTime (London)", "Epic", "Resolution"], keep="last")
+            df_merged = df_merged.set_index("DateTime (London)").sort_index()
 
-            combined_csv = os.path.join(output_dir, f"All_Products_Full_1h_30min_{datetime.now().strftime('%Y%m%d')}.csv")
-            df_combined_all.to_csv(combined_csv, encoding="utf-8")
-            print(f"\n💾 All Products Combined CSV: {os.path.abspath(combined_csv)}")
+        print(f"\n✅ 合并后累计总表记录数：{len(df_merged)}（新增 {len(df_new_all)}）")
+        save_accumulated_excel(accumulated_excel_path, df_merged)
+        print(f"💾 已更新累计总表 -> {accumulated_excel_path}\n")
 
-            combined_excel = os.path.join(output_dir, f"All_Products_Full_1h_30min_{datetime.now().strftime('%Y%m%d')}.xlsx")
-            with pd.ExcelWriter(combined_excel, engine="openpyxl") as writer:
-                df_combined_all.to_excel(writer, sheet_name="All_Full_Data", index=True)
-                for epic, df in all_data.items():
-                    sheet_name = safe_sheet_name(EPIC_TO_NAME.get(epic, epic))
-                    df.to_excel(writer, sheet_name=sheet_name, index=True)
-
-            combined_excel_path_abs = os.path.abspath(combined_excel)
-            print(f"💾 All Products Combined Excel: {combined_excel_path_abs}")
-
-        return all_data, output_dir_abs, combined_excel_path_abs
+        return accumulated_excel_path
 
     finally:
         try:
             ig_service.logout()
         except Exception:
             pass
-        print("\n🔚 Session Closed\n")
+        print("🔚 Session Closed\n")
 
 
 # =============================================================================
-# 3) Step 2 - 更新模板日期（8个sheet）
+# 3) Step 2 - 更新模板日期（8个sheet）(你的原逻辑不变)
 # =============================================================================
 
 def update_template_dates_uk(TARGET_FILE: str, OUTPUT_FILE: str):
-    """更新模板日期（基于英国时间）"""
     uk_now = datetime.now(TZ_LONDON)
     today_str = uk_now.strftime("%Y/%m/%d")
-
-    # 【修改 4】：新增周一周五的模板日期回溯逻辑
-    if uk_now.weekday() == 0:
-        yesterday_str = (uk_now - timedelta(days=3)).strftime("%Y/%m/%d")
-    else:
-        yesterday_str = (uk_now - timedelta(days=1)).strftime("%Y/%m/%d")
+    yesterday_str = (uk_now - timedelta(days=1)).strftime("%Y/%m/%d")
 
     print("======================================")
     print("✅ Step 2/5: 更新模板日期（英国时间 Europe/London）")
@@ -464,65 +394,37 @@ def update_template_dates_uk(TARGET_FILE: str, OUTPUT_FILE: str):
                 return s[:10].replace("-", "/")
         return None
 
-    # 更新时间sheet（A3-A8=昨天, A9-A14=今天）
     print("✅ Step 2.1: 更新 time_sheets (A3-A14)")
     for sheet_name in TIME_SHEETS:
-        print(f"\n🧾 处理 sheet: {sheet_name}")
         if sheet_name not in wb.sheetnames:
-            print(f"  ⚠ 不存在，跳过：{sheet_name}")
             continue
         ws = wb[sheet_name]
 
         for row in range(3, 9):
             cell = ws.cell(row=row, column=1)
-            old = cell.value
-            new = update_time_sheet_cell(old, yesterday_str)
-            print(f"  - {sheet_name}!A{row} 原值: {old}")
-            if new is not None and new != old:
+            new = update_time_sheet_cell(cell.value, yesterday_str)
+            if new is not None:
                 cell.value = new
-                print(f"    ✅ 更新为: {new}")
-            else:
-                print("    ↪ 跳过")
 
         for row in range(9, 15):
             cell = ws.cell(row=row, column=1)
-            old = cell.value
-            new = update_time_sheet_cell(old, today_str)
-            print(f"  - {sheet_name}!A{row} 原值: {old}")
-            if new is not None and new != old:
+            new = update_time_sheet_cell(cell.value, today_str)
+            if new is not None:
                 cell.value = new
-                print(f"    ✅ 更新为: {new}")
-            else:
-                print("    ↪ 跳过")
 
-    # 更新变化率sheet（A3=昨天, A9=今天）
     print("\n✅ Step 2.2: 更新 change_sheets (A3/A9)")
     for sheet_name in CHANGE_SHEETS:
-        print(f"\n🧾 处理 sheet: {sheet_name}")
         if sheet_name not in wb.sheetnames:
-            print(f"  ⚠ 不存在，跳过：{sheet_name}")
             continue
         ws = wb[sheet_name]
 
-        cell = ws.cell(row=3, column=1)
-        old = cell.value
-        norm = normalize_change_sheet_date_cell(old)
-        print(f"  - {sheet_name}!A3 原值: {old} | 识别为: {norm}")
-        if norm is not None:
-            cell.value = yesterday_str
-            print(f"    ✅ 更新为: {yesterday_str}")
-        else:
-            print("    ⚠ 无法识别，跳过 A3")
+        c3 = ws.cell(row=3, column=1)
+        if normalize_change_sheet_date_cell(c3.value) is not None:
+            c3.value = yesterday_str
 
-        cell = ws.cell(row=9, column=1)
-        old = cell.value
-        norm = normalize_change_sheet_date_cell(old)
-        print(f"  - {sheet_name}!A9 原值: {old} | 识别为: {norm}")
-        if norm is not None:
-            cell.value = today_str
-            print(f"    ✅ 更新为: {today_str}")
-        else:
-            print("    ⚠ 无法识别，跳过 A9")
+        c9 = ws.cell(row=9, column=1)
+        if normalize_change_sheet_date_cell(c9.value) is not None:
+            c9.value = today_str
 
     wb.save(OUTPUT_FILE)
     print(f"\n🎉 Step 2 完成：已保存 -> {OUTPUT_FILE}\n")
@@ -530,17 +432,16 @@ def update_template_dates_uk(TARGET_FILE: str, OUTPUT_FILE: str):
 
 
 # =============================================================================
-# 4) Step 3 - 对全量Excel进行筛选（按你的统一规则）
+# 4) Step 3 - 对“累计总表”进行筛选（你的原逻辑不变）
 # =============================================================================
 
 def filter_historical_data_full_to_template_times(input_excel_path: str, output_excel_path: str):
-    """从全量数据筛选模板需要的时间点"""
     print("======================================")
-    print("✅ Step 3/5: 从全量历史数据筛选出模板需要的时间点")
-    print(f"🧾 Read  Full Excel : {input_excel_path}")
-    print(f"🧾 Write Filtered   : {output_excel_path}")
-    print(f"🔧 Rule 1h hours     : {sorted(list(FILTER_1H_HOURS))}")
-    print(f"🔧 Rule 30Min times  : {sorted(list(FILTER_30MIN_TIMES))}")
+    print("✅ Step 3/5: 从累计总表筛选出模板需要的时间点")
+    print(f"🧾 Read  Accumulated Excel : {input_excel_path}")
+    print(f"🧾 Write Filtered          : {output_excel_path}")
+    print(f"🔧 Rule 1h hours            : {sorted(list(FILTER_1H_HOURS))}")
+    print(f"🔧 Rule 30Min times         : {sorted(list(FILTER_30MIN_TIMES))}")
     print("======================================\n")
 
     df = pd.read_excel(
@@ -549,35 +450,28 @@ def filter_historical_data_full_to_template_times(input_excel_path: str, output_
         index_col="DateTime (London)",
         parse_dates=["DateTime (London)"],
     )
-    print(f"✅ 成功读取全量数据：{len(df)} 条记录")
+    print(f"✅ 成功读取累计数据：{len(df)} 条记录")
 
     filtered_data = []
     for product_name, group in df.groupby("Product Name"):
-        print(f"\n🔍 筛选产品：{product_name}")
         group_1h = group[group["Resolution"] == "1h"].copy()
         group_30min = group[group["Resolution"] == "30Min"].copy()
 
-        # 筛选1h数据（指定小时）
         group_1h_filtered = group_1h[group_1h.index.hour.isin(FILTER_1H_HOURS)]
 
-        # 筛选30Min数据（指定时间）
         group_30min["time_str"] = group_30min.index.strftime("%H:%M")
         group_30min_filtered = group_30min[group_30min["time_str"].isin(FILTER_30MIN_TIMES)]
         group_30min_filtered = group_30min_filtered.drop(columns=["time_str"], errors="ignore")
 
-        # 合并筛选结果
         group_filtered = pd.concat([group_1h_filtered, group_30min_filtered]).sort_index()
-        print(
-            f"   1h筛选后：{len(group_1h_filtered)} 条 | "
-            f"30Min筛选后：{len(group_30min_filtered)} 条 | "
-            f"总计：{len(group_filtered)} 条"
-        )
         filtered_data.append(group_filtered)
 
-    df_filtered = pd.concat(filtered_data).sort_index()
-    print(f"\n📊 最终筛选结果：{len(df_filtered)} 条记录（原始：{len(df)} 条）")
+    if not filtered_data:
+        raise RuntimeError("❌ 筛选结果为空，无法继续")
 
-    # 保存筛选后数据
+    df_filtered = pd.concat(filtered_data).sort_index()
+    print(f"📊 最终筛选结果：{len(df_filtered)} 条")
+
     Path(os.path.dirname(output_excel_path)).mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output_excel_path, engine="openpyxl") as writer:
         df_filtered.to_excel(writer, sheet_name="Filtered_Full_Data", index=True)
@@ -590,11 +484,10 @@ def filter_historical_data_full_to_template_times(input_excel_path: str, output_
 
 
 # =============================================================================
-# 5) Step 4 - 把筛选后的 Close 写入更新过日期的模板（05/07/15/20时）
+# 5) Step 4 - 写入模板（保持你原逻辑）
 # =============================================================================
 
 def parse_timestamp_label(label: str) -> datetime:
-    """解析模板中的时间标签为datetime对象"""
     label = str(label).strip()
     date_part, time_part = label.split("-")
     date_obj = datetime.strptime(date_part.strip(), "%Y/%m/%d")
@@ -612,7 +505,6 @@ def parse_timestamp_label(label: str) -> datetime:
 
 
 def fill_template_with_close_data(source_file: str, template_file: str, output_file: str):
-    """将筛选后的Close数据写入模板"""
     print("======================================")
     print("✅ Step 4/5: 把筛选后的 Close 数据写入模板（05/07/15/20时）")
     print(f"🧾 Read  Filtered Data Excel : {source_file}")
@@ -625,65 +517,39 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
     if not os.path.exists(template_file):
         raise FileNotFoundError(f"模板文件不存在：{template_file}")
 
-    # 读取源数据
-    print("📥 正在读取源数据工作簿……")
     product_data = {}
-    source_sheets = pd.ExcelFile(source_file).sheet_names
-    print(f"🔍 源文件包含工作表：{source_sheets}")
-
     for header_name, sheet_name in PRODUCT_SHEET_MAP.items():
-        print(f"  - 尝试读取 {header_name} <- sheet: {sheet_name}")
         try:
             df = pd.read_excel(source_file, sheet_name=sheet_name)
-        except ValueError as e:
-            print(f"  ❌ 无法找到工作表 '{sheet_name}'，错误：{e}")
+        except Exception:
             continue
 
-        if "DateTime (London)" not in df.columns:
-            print(f"  ❌ 工作表 '{sheet_name}' 缺少 'DateTime (London)' 列，跳过")
+        if "DateTime (London)" not in df.columns or "Close" not in df.columns:
             continue
+
         df["DateTime (London)"] = pd.to_datetime(df["DateTime (London)"])
         df = df.set_index("DateTime (London)")
-
-        if "Close" not in df.columns:
-            print(f"  ❌ 工作表 '{sheet_name}' 缺少 'Close' 列，跳过")
-            continue
-
         keep_cols = ["Close"]
         if "Resolution" in df.columns:
             keep_cols.append("Resolution")
         product_data[header_name] = df[keep_cols]
 
-    print(f"\n✅ 源数据读取完成，共加载 {len(product_data)} 个产品")
-
-    # 写入模板
-    print("📗 正在打开目标模板工作簿……")
     wb = load_workbook(template_file)
 
     for sheet_name in TIME_SHEETS:
         if sheet_name not in wb.sheetnames:
-            print(f"⚠ 警告：模板中找不到工作表 '{sheet_name}'，跳过。")
             continue
 
         ws = wb[sheet_name]
-        print(f"\n📝 处理工作表：{sheet_name}")
-
         max_row = ws.max_row
         max_col = ws.max_column
 
-        # 映射列到产品
         col_to_product = {}
         for col in range(2, max_col + 1):
             header = ws.cell(row=1, column=col).value
             if header and header in PRODUCT_SHEET_MAP:
                 col_to_product[col] = header
-                print(f"  - 第 {col} 列 对应产品：{header}")
 
-        if not col_to_product:
-            print("  ⚠ 第1行没有找到任何已配置的产品列，跳过该表。")
-            continue
-
-        # 逐行写入数据
         for row in range(3, max_row + 1):
             label = ws.cell(row=row, column=1).value
             if not label:
@@ -691,44 +557,40 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
 
             try:
                 ts = parse_timestamp_label(label)
-            except Exception as e:
-                print(f"  ⚠ 第 {row} 行 A 列无法解析时间：{label} -> {e}")
+            except Exception:
                 continue
 
             for col, product_header in col_to_product.items():
-                df = product_data.get(product_header)
-                if df is None:
+                dfp = product_data.get(product_header)
+                if dfp is None:
                     continue
 
-                if ts in df.index:
-                    close_value = df.loc[ts, "Close"]
+                if ts in dfp.index:
+                    close_value = dfp.loc[ts, "Close"]
                     if hasattr(close_value, "iloc"):
                         close_value = close_value.iloc[0]
                     close_value = float(close_value)
 
-                    # 18:30用18:00数据
+                    # 18:30 <-> 18:00 互补
                     if ts.hour == 18 and ts.minute == 30:
                         ts_1800 = ts.replace(minute=0)
-                        if ts_1800 in df.index:
-                            close_value = df.loc[ts_1800, "Close"]
-                            print(f"    调整：18:30 数据使用 18:00 的 Close 值：{close_value}")
-
-                    # 18:00用18:30数据
+                        if ts_1800 in dfp.index:
+                            close_value = float(dfp.loc[ts_1800, "Close"])
                     if ts.hour == 18 and ts.minute == 0:
                         ts_1830 = ts.replace(minute=30)
-                        if ts_1830 in df.index:
-                            close_value = df.loc[ts_1830, "Close"]
-                            print(f"    调整：18:00 数据使用 18:30 的 Close 值：{close_value}")
+                        if ts_1830 in dfp.index:
+                            close_value = float(dfp.loc[ts_1830, "Close"])
 
                     ws.cell(row=row, column=col).value = close_value
-                    print(
-                        f"    写入 {sheet_name}!{ws.cell(row=row, column=col).coordinate} "
-                        f"<- {product_header} {ts} Close={close_value}"
-                    )
-
                 else:
-                    # 【修改 2】：去掉了 20 时用 19 时代替的 copy 逻辑
-                    print(f"    ⚠ {product_header} 缺少 {ts} 的数据，不写入。")
+                    # 20:00 用 19:00
+                    if ts.hour == 20 and ts.minute == 0:
+                        ts_1900 = ts.replace(hour=19, minute=0)
+                        if ts_1900 in dfp.index:
+                            close_value = dfp.loc[ts_1900, "Close"]
+                            if hasattr(close_value, "iloc"):
+                                close_value = close_value.iloc[0]
+                            ws.cell(row=row, column=col).value = float(close_value)
 
     wb.save(output_file)
     print(f"\n🎉 Step 4 完成：已保存为 -> {output_file}\n")
@@ -736,13 +598,10 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
 
 
 # =============================================================================
-# 6) Step 5 - （可选）Gmail发送（支持多收件人）
+# 6) Step 5 - 发邮件（可选，保持你原逻辑）
 # =============================================================================
 
-def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_path, email_title, content):
-    """
-    支持多收件人的Gmail邮件发送函数
-    """
+def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_path, email_title, content, email_server="smtp.gmail.com", email_port=587):
     print("======================================")
     print("✅ Step 5/5: 发送 Gmail 邮件（含附件）")
     print(f"📨 From: {send_usr}")
@@ -750,33 +609,27 @@ def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_
     print(f"📎 Attachment: {attachment_path}")
     print("======================================\n")
 
-    email_server = "smtp.gmail.com"
-    email_port = 587
 
-    # 构建邮件
     msg = MIMEMultipart()
     msg["Subject"] = email_title
     msg["From"] = send_usr
-    msg["To"] = ", ".join(receive_usr_list)  # 多收件人用逗号分隔
+    msg["To"] = ", ".join(receive_usr_list)
     msg.attach(MIMEText(content, "plain", "utf-8"))
 
-    # 添加附件
     if os.path.exists(attachment_path):
         with open(attachment_path, "rb") as f:
             attachment = MIMEApplication(f.read(), _subtype="xlsx")
             attachment.add_header("Content-Disposition", "attachment", filename=os.path.basename(attachment_path))
             msg.attach(attachment)
-        print(f"✅ 已添加附件：{os.path.basename(attachment_path)}")
     else:
         print(f"❌ 附件不存在：{attachment_path}")
         return
 
-    # 发送邮件
     try:
         smtp = SMTP(email_server, email_port, timeout=30)
         smtp.starttls()
         smtp.login(send_usr, send_pwd)
-        smtp.sendmail(send_usr, receive_usr_list, msg.as_string())  # 传入收件人列表
+        smtp.sendmail(send_usr, receive_usr_list, msg.as_string())
         smtp.quit()
         print("✅ Gmail邮件（含附件）发送成功！\n")
     except Exception as e:
@@ -784,63 +637,29 @@ def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_
 
 
 # =============================================================================
-# 7) 主程序：一键跑完
+# 7) 主程序：一键跑完（✅ 已删除 days=2）
 # =============================================================================
 
 def main():
     print("\n" + "=" * 70)
-    print("🚀 一键跑完主程序启动")
+    print("🚀 一键跑完主程序启动（增量累计版：只抓昨天）")
     print("=" * 70)
 
-    # Step 1: 抓取全量数据
-    epic_list = [
-        "IX.D.SPTRD.IFMM.IP",
-        "IX.D.HANGSENG.IFU.IP",
-        "IX.D.NIKKEI.IFM.IP",
-        "CS.D.USDJPY.CFD.IP",
-        "CS.D.USDSGD.CFD.IP",
-        "IX.D.FTSE.IFMM.IP",
-        "CS.D.GBPUSD.CFD.IP",
-        "IX.D.CAC.IFMM.IP",
-        "CS.D.EURUSD.CFD.IP",
-        "CS.D.USDINR.MINI.IP",
-        "IX.D.DAX.IFMS.IP",
-        "CS.D.USDCNH.CFD.IP",
-        "CS.D.USDTWD.MINI.IP",
-        "IX.D.ASX.IFMM.IP",
-        "CS.D.AUDUSD.CFD.IP",
-        "CS.D.USDKRW.MINI.IP",
-        "CS.D.USDMXN.CFD.IP",
-    ]
+    epic_list = list(EPIC_TO_NAME.keys())
 
-    # 【修改 3】：新增周一周五的数据连接（伦敦时判断），不再写死 days = 2
-    current_weekday = datetime.now(TZ_LONDON).weekday()
-    if current_weekday == 0:
-        days = 4
-    else:
-        days = 2
-
-    all_data, output_dir_abs, full_excel_abs = get_multiple_historical_prices_full(
+    # Step 1: 只抓昨天，并累计到一个总表
+    accumulated_excel_path = fetch_yesterday_and_accumulate(
         epic_list=epic_list,
-        start_date=None,
-        end_date=None,
-        days=days,  # 将动态判断的天数传入
-        save_individual=True,
-        save_combined=True,
+        accumulated_excel_path=ACCUMULATED_EXCEL_FILE
     )
-
-    if not full_excel_abs:
-        raise RuntimeError("❌ Step1 未生成合并Excel，无法继续。")
-    print(f"\n✅ Step1 产物确认：")
-    print(f"📁 抓取输出目录: {output_dir_abs}")
-    print(f"📄 全量合并Excel : {full_excel_abs}\n")
 
     # Step 2: 更新模板日期
     update_template_dates_uk(TEMPLATE_FILE, UPDATED_TEMPLATE_FILE)
 
-    # Step 3: 筛选数据
+    # Step 3: 从累计总表筛选
+    output_dir_abs = os.path.dirname(accumulated_excel_path)
     filtered_excel_abs = os.path.join(output_dir_abs, FILTERED_DATA_EXCEL_NAME)
-    filter_historical_data_full_to_template_times(full_excel_abs, filtered_excel_abs)
+    filter_historical_data_full_to_template_times(accumulated_excel_path, filtered_excel_abs)
 
     # Step 4: 填充模板
     fill_template_with_close_data(
@@ -849,7 +668,7 @@ def main():
         output_file=FILLED_OUTPUT_FILE,
     )
 
-    # Step 5: 发送邮件（可选）
+    # Step 5: 发邮件（可选）
     if SEND_EMAIL:
         gmail_config = get_gmail_config()
         email_title = f"Excel数据附件 - {datetime.now().strftime('%Y%m%d')} - 变化率表格"
@@ -862,15 +681,14 @@ def main():
             attachment_path=FILLED_OUTPUT_FILE,
             email_title=email_title,
             content=content,
+            email_server=gmail_config.email_server,
+            email_port=gmail_config.email_port,
         )
-    else:
-        print("ℹ️ Step5 已跳过（SEND_EMAIL = False）\n")
+    else:        print("ℹ️ Step5 已跳过（SEND_EMAIL = False）\n")
 
-    # 输出完成信息
     print("=" * 70)
     print("🎉 全流程完成！")
-    print(f"📁 抓取数据输出目录: {output_dir_abs}")
-    print(f"📄 全量数据Excel    : {full_excel_abs}")
+    print(f"📄 累计总表（核心） : {ACCUMULATED_EXCEL_FILE}")
     print(f"📄 筛选后数据Excel  : {filtered_excel_abs}")
     print(f"📄 更新后模板       : {UPDATED_TEMPLATE_FILE}")
     print(f"📄 最终填好数据表   : {FILLED_OUTPUT_FILE}")

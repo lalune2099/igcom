@@ -35,7 +35,6 @@ from smtplib import SMTP
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-
 from config import get_gmail_config, get_ig_account
 
 
@@ -86,6 +85,8 @@ FILTER_30MIN_TIMES = {"18:00", "18:30"}
 # （可选）是否发送邮件
 SEND_EMAIL = True
 
+# Gmail recipients are loaded from GMAIL_RECIPIENTS when SEND_EMAIL is enabled.
+
 # =============================================================================
 # 1) 日志与时区（仅用pytz，兼容Python3.8）
 # =============================================================================
@@ -111,7 +112,8 @@ TZ_UTC = pytz.UTC
 # 2) Step 1 - IG抓取：你的原逻辑（全量1h+30Min，不过滤不去重，标注Resolution，索引转伦敦时间）
 # =============================================================================
 
-DEFAULT_IG_PROFILE = "ACCOUNT1"
+# IG账户配置：默认使用当前脚本对应的账号，可用 IG_PROFILE 覆盖。
+DEFAULT_IG_PROFILE = "ACCOUNT4"
 _ig_account = get_ig_account(DEFAULT_IG_PROFILE)
 
 
@@ -120,7 +122,6 @@ class IGConfig:
     password = _ig_account.password
     api_key = _ig_account.api_key
     acc_type = _ig_account.acc_type
-
 EPIC_TO_NAME = {
     "IX.D.SPTRD.IFMM.IP": "US 500 Cash ($1)",
     "IX.D.HANGSENG.IFU.IP": "Hong Kong HS50 Cash ($1)",
@@ -194,40 +195,96 @@ def safe_sheet_name(name: str) -> str:
 #     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
 #     return df
 
+# def safe_mid_prices(prices, version):
+#     """
+#     终极清洗站：应对 IG API 东八区账号双重减时 Bug！
+#     直接废弃有毒的 snapshotTimeUTC，强制使用 snapshotTime。
+#     """
+#     if len(prices) == 0:
+#         raise Exception("Historical price data not found")
+
+#     df = json_normalize(prices)
+
+#     # 1. 无视 IG 官方的 Bug 字段，强制统一使用 snapshotTime
+#     if "snapshotTime" not in df.columns:
+#         if "snapshotTimeUTC" in df.columns:
+#             df["snapshotTime"] = df["snapshotTimeUTC"]  # 极端保底
+            
+#     df = df.set_index("snapshotTime")
+    
+#     # 直接丢弃那个被错误减去 8 小时的有毒列
+#     df = df.drop(columns=["snapshotTimeUTC"], errors="ignore")
+
+#     # 2. 时间格式化：此时的时间实际上是正确的 UTC 时间
+#     df.index = pd.to_datetime(df.index)
+    
+#     # 盖上 UTC 时区戳
+#     if df.index.tz is None:
+#         df.index = df.index.tz_localize(TZ_UTC)
+        
+#     # 3. 转换为伦敦时间（重要：这样写能自动适应英国 3月底的夏令时切换）
+#     df.index = df.index.tz_convert(TZ_LONDON).tz_localize(None)
+
+#     # 命名列名，准备写表
+#     df.index.name = "DateTime (London)"
+    
+#     # 4. 计算中间价
+#     df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
+
+#     # 丢弃多余的列
+#     drop_cols = [
+#         "openPrice.lastTraded", "closePrice.lastTraded", "highPrice.lastTraded", "lowPrice.lastTraded",
+#         "openPrice.bid", "openPrice.ask", "closePrice.bid", "closePrice.ask",
+#         "highPrice.bid", "highPrice.ask", "lowPrice.bid", "lowPrice.ask", "lastTradedVolume",
+#     ]
+#     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+    
+#     return df
+
 def safe_mid_prices(prices, version):
     """
-    终极清洗站：应对 IG API 东八区账号双重减时 Bug！
-    直接废弃有毒的 snapshotTimeUTC，强制使用 snapshotTime。
+    全方位时区诊断探针版
     """
     if len(prices) == 0:
         raise Exception("Historical price data not found")
 
     df = json_normalize(prices)
 
-    # 1. 无视 IG 官方的 Bug 字段，强制统一使用 snapshotTime
-    if "snapshotTime" not in df.columns:
-        if "snapshotTimeUTC" in df.columns:
-            df["snapshotTime"] = df["snapshotTimeUTC"]  # 极端保底
+    # ================= 🚨 全景诊断探针开始 =================
+    print("\n" + "="*60)
+    print(f"[Debug] 🕒 你的电脑当前时间(北京): {pd.Timestamp.now(tz='Asia/Shanghai').strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    if "snapshotTime" in df.columns:
+        print(f"[Debug] 🕵️‍♂️ 原始 snapshotTime    -> 第一条: {df['snapshotTime'].iloc[0]}, 最后一条: {df['snapshotTime'].iloc[-1]}")
+    else:
+        print("[Debug] 🕵️‍♂️ 原始 snapshotTime    -> 未找到该列")
+        
+    if "snapshotTimeUTC" in df.columns:
+        print(f"[Debug] 🌍 原始 snapshotTimeUTC -> 第一条: {df['snapshotTimeUTC'].iloc[0]}, 最后一条: {df['snapshotTimeUTC'].iloc[-1]}")
+    else:
+        print("[Debug] 🌍 原始 snapshotTimeUTC -> 未找到该列")
+    print("="*60 + "\n")
+    # ================= 🚨 全景诊断探针结束 =================
 
-    df = df.set_index("snapshotTime")
+    # 为了让程序能顺利跑完生成日志，这里先使用标准的 UTC 转换逻辑垫底
+    if "snapshotTimeUTC" in df.columns:
+        df = df.set_index("snapshotTimeUTC")
+        df = df.drop(columns=["snapshotTime"], errors="ignore")
+        df.index = pd.to_datetime(df.index, utc=True)
+    elif "snapshotTime" in df.columns:
+        df = df.set_index("snapshotTime")
+        df.index = pd.to_datetime(df.index)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize(TZ_UTC)
 
-    # 直接丢弃那个被错误减去 8 小时的有毒列
-    df = df.drop(columns=["snapshotTimeUTC"], errors="ignore")
-
-    # 2. 时间格式化：此时的时间实际上是正确的 UTC 时间
-    df.index = pd.to_datetime(df.index)
-
-    # 盖上 UTC 时区戳
-    if df.index.tz is None:
-        df.index = df.index.tz_localize(TZ_UTC)
-
-    # 3. 转换为伦敦时间（重要：这样写能自动适应英国 3月底的夏令时切换）
+    # 统一尝试转换为伦敦时间
+    import pytz
+    TZ_LONDON = pytz.timezone("Europe/London")
     df.index = df.index.tz_convert(TZ_LONDON).tz_localize(None)
 
-    # 命名列名，准备写表
     df.index.name = "DateTime (London)"
-
-    # 4. 计算中间价
+    
+    # 计算中间价
     df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
 
     # 丢弃多余的列
@@ -237,11 +294,9 @@ def safe_mid_prices(prices, version):
         "highPrice.bid", "highPrice.ask", "lowPrice.bid", "lowPrice.ask", "lastTradedVolume",
     ]
     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
-
+    
     return df
-
-
-
+    
 
 
 def fetch_data_by_resolution(ig_service, epic: str, resolution: str, start_date_str: str, end_date_str: str) -> pd.DataFrame:
@@ -300,7 +355,7 @@ def get_multiple_historical_prices_full(
 
     if start_date is None:
         # 【修改 1】：去掉写死的 day=2，使用传入的 days 变量
-        start_date = end_date - timedelta(days=days)
+        start_date = end_date - timedelta(days=days)  
     else:
         if not start_date.tzinfo:
             start_date = TZ_BEIJING.localize(start_date)
@@ -421,7 +476,7 @@ def update_template_dates_uk(TARGET_FILE: str, OUTPUT_FILE: str):
     """更新模板日期（基于英国时间）"""
     uk_now = datetime.now(TZ_LONDON)
     today_str = uk_now.strftime("%Y/%m/%d")
-
+    
     # 【修改 4】：新增周一周五的模板日期回溯逻辑
     if uk_now.weekday() == 0:
         yesterday_str = (uk_now - timedelta(days=3)).strftime("%Y/%m/%d")
@@ -739,7 +794,7 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
 # 6) Step 5 - （可选）Gmail发送（支持多收件人）
 # =============================================================================
 
-def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_path, email_title, content):
+def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_path, email_title, content, email_server="smtp.gmail.com", email_port=587):
     """
     支持多收件人的Gmail邮件发送函数
     """
@@ -750,8 +805,6 @@ def send_gmail_with_attachment(send_usr, send_pwd, receive_usr_list, attachment_
     print(f"📎 Attachment: {attachment_path}")
     print("======================================\n")
 
-    email_server = "smtp.gmail.com"
-    email_port = 587
 
     # 构建邮件
     msg = MIMEMultipart()
@@ -862,6 +915,8 @@ def main():
             attachment_path=FILLED_OUTPUT_FILE,
             email_title=email_title,
             content=content,
+            email_server=gmail_config.email_server,
+            email_port=gmail_config.email_port,
         )
     else:
         print("ℹ️ Step5 已跳过（SEND_EMAIL = False）\n")

@@ -43,9 +43,9 @@ TZ_UTC = pytz.UTC
 DATA_ROOT_DIR = "/igcom"
 
 # =========================
-# IG 账户配置
+# IG/Gmail 配置
 # =========================
-DEFAULT_IG_PROFILE = "ACCOUNT3"
+DEFAULT_IG_PROFILE = "ACCOUNT1"
 _ig_account = get_ig_account(DEFAULT_IG_PROFILE)
 _gmail_config = get_gmail_config()
 
@@ -63,7 +63,6 @@ class EmailConfig:
     receive_usr_list = _gmail_config.receive_usr_list
     email_server = _gmail_config.email_server
     email_port = _gmail_config.email_port
-
 # =========================
 # 目标产品
 # =========================

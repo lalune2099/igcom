@@ -13,7 +13,6 @@ from smtplib import SMTP
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-
 from config import get_gmail_config, get_ig_account
 
 # ===================== 全局配置（绝对路径+核心参数）=====================
@@ -22,8 +21,10 @@ BASE_DIR = '/igcom/'  # 基础目录
 OUTPUT_DIR_PREFIX = 'historical_data_'  # 输出目录前缀
 EXCEL_ATTACHMENT_PREFIX = 'All_Products_'  # Excel文件前缀（与数据生成逻辑一致）
 
+# IG/Gmail配置
 DEFAULT_IG_PROFILE = "ACCOUNT2"
 _ig_account = get_ig_account(DEFAULT_IG_PROFILE)
+_gmail_config = get_gmail_config()
 
 
 class IGConfig(object):
@@ -32,18 +33,16 @@ class IGConfig(object):
     api_key = _ig_account.api_key
     acc_type = _ig_account.acc_type
 
-# Gmail发送配置
-_gmail_config = get_gmail_config()
+
 GMAIL_CONFIG = {
     'send_usr': _gmail_config.send_usr,
     'send_pwd': _gmail_config.send_pwd,
     'receive_usr_list': _gmail_config.receive_usr_list,
-    'email_title': f'Excel数据附件 - {datetime.now().strftime("%Y%m%d")}',  # 动态标题（含日期）
+    'email_title': f'Excel数据附件 - {datetime.now().strftime("%Y%m%d")}',
     'email_content': '这是igcom金融数据Excel附件，请查收！',
     'smtp_server': _gmail_config.email_server,
-    'smtp_port': _gmail_config.email_port
+    'smtp_port': _gmail_config.email_port,
 }
-
 # Epic与英文名称映射
 EPIC_TO_NAME = {
     'IX.D.SPTRD.IFMM.IP': 'US 500 Cash ($1)',
@@ -109,12 +108,12 @@ def safe_mid_prices(prices, version):
 
 # ===================== 数据获取函数 =====================
 def get_multiple_historical_prices(
-    epic_list,
-    resolution='30Min',
+    epic_list, 
+    resolution='30Min', 
     start_date=None,
     end_date=None,
-    days=1,
-    save_individual=True,
+    days=1, 
+    save_individual=True, 
     save_combined=True
 ):
     """批量获取金融产品历史数据，返回输出目录路径"""

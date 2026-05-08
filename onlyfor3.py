@@ -37,7 +37,7 @@ TZ_BEIJING = pytz.timezone('Asia/Shanghai')
 TZ_LONDON = pytz.timezone('Europe/London')
 TZ_UTC = pytz.UTC
 
-# IG账户配置（替换为你的实际信息）
+# IG/Gmail配置
 DEFAULT_IG_PROFILE = "ACCOUNT3"
 _ig_account = get_ig_account(DEFAULT_IG_PROFILE)
 _gmail_config = get_gmail_config()
@@ -50,14 +50,12 @@ class IGConfig(object):
     acc_type = _ig_account.acc_type
 
 
-# 账号配置
 class EmailConfig(object):
     send_usr = _gmail_config.send_usr
     send_pwd = _gmail_config.send_pwd
     receive_usr_list = _gmail_config.receive_usr_list
     email_server = _gmail_config.email_server
-    email_port = _gmail_config.email_port                   # TLS加密端口
-
+    email_port = _gmail_config.email_port
 # ====================== 核心配置 ======================
 # 目标产品EPIC映射
 TARGET_EPIC_MAP = {
@@ -81,12 +79,12 @@ def get_daily_file_path():
     daily_filename = f"ig_accumulated_1h_data_{london_today.strftime('%Y%m%d')}.xlsx"
     # 拼接完整路径
     daily_file_path = os.path.join(DATA_ROOT_DIR, daily_filename)
-
+    
     # 确保根目录存在
     if not os.path.exists(DATA_ROOT_DIR):
         os.makedirs(DATA_ROOT_DIR)
         print(f"📁 创建数据根目录：{DATA_ROOT_DIR}")
-
+    
     return daily_file_path
 
 def safe_sheet_name(name: str) -> str:
@@ -132,7 +130,7 @@ def calculate_target_hour():
     print(f"🕒 当前伦敦时间：{current_london.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"📅 今日伦敦日期：{current_london.date().strftime('%Y-%m-%d')}")
     print(f"📄 今日数据文件：{get_daily_file_path()}")
-
+    
     if current_minute >= TRIGGER_MINUTE_THRESHOLD:
         target_hour = current_hour - 1
         if target_hour < 0:
@@ -150,7 +148,7 @@ def fetch_single_product_1h_data(ig_service, epic: str, product_name: str, targe
     if target_hour is None:
         logger.warning(f"target_hour为None，跳过{product_name}抓取")
         return pd.DataFrame()
-
+    
     end_date_london = datetime.now(TZ_LONDON)
     end_date_london = end_date_london.replace(hour=target_hour + 1, minute=0, second=0, microsecond=0)
     start_date_london = end_date_london - timedelta(hours=2)
@@ -193,7 +191,7 @@ def load_accumulated_data():
         with pd.ExcelWriter(daily_file_path, engine='openpyxl') as writer:
             empty_df.to_excel(writer, sheet_name='All_Accumulated_Data', index=True)
         return empty_df
-
+    
     try:
         df = pd.read_excel(
             daily_file_path,
@@ -210,7 +208,7 @@ def save_accumulated_data(new_df: pd.DataFrame):
     """保存当日累积数据 → 修复：移除返回值（与Windows版本一致）"""
     daily_file_path = get_daily_file_path()
     history_df = load_accumulated_data()
-
+    
     if not history_df.empty:
         new_reset = new_df.reset_index()
         history_reset = history_df.reset_index()
@@ -227,7 +225,7 @@ def save_accumulated_data(new_df: pd.DataFrame):
         for name, group in combined.groupby('Product Name'):
             sheet_name = safe_sheet_name(name)
             group.to_excel(writer, sheet_name=sheet_name, index=True)
-
+    
     print(f"💾 今日累积数据保存完成：{daily_file_path}")
     print(f"📊 总计数据量：{len(combined)} 条")
     print(f"📈 各产品数据量：")
@@ -240,7 +238,7 @@ def send_gmail_with_attachment(target_hour: int, current_london: datetime, final
     daily_file_path = get_daily_file_path()
     # 构建邮件标题（包含日期+小时）
     email_title = f"IG 1h累积数据 - 伦敦{current_london.date().strftime('%Y%m%d')} {target_hour}点 - {current_london.strftime('%H%M')}"
-
+    
     # 构建邮件正文
     content = f"""
     IG 1h数据自动抓取&累积完成通知
@@ -248,7 +246,7 @@ def send_gmail_with_attachment(target_hour: int, current_london: datetime, final
     抓取时间（伦敦）：{current_london.strftime('%Y-%m-%d %H:%M:%S')}
     目标抓取小时：{target_hour} 点
     今日数据文件：{daily_file_path}
-
+    
     本次抓取统计：
     ------------------------------
     """
@@ -256,7 +254,7 @@ def send_gmail_with_attachment(target_hour: int, current_london: datetime, final
     for product_name, group in final_df.groupby('Product Name'):
         hours = sorted(group.index.hour.unique())
         content += f"✅ {product_name}：已累积 {len(hours)} 小时数据 → {hours}\n"
-
+    
     content += f"""
     总计累积数据量：{len(final_df)} 条
     ==============================

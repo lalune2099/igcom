@@ -2,9 +2,9 @@
 
 from smtplib import SMTP
 from email.mime.text import MIMEText
-from config import get_gmail_config
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
+from config import get_gmail_config
 import os
 
 # ---------------------- Gmail 核心配置 ----------------------
@@ -15,10 +15,9 @@ receive_usr_list = gmail_config.receive_usr_list
 # 附件路径（按你的文件路径直接填写，Windows系统无需修改斜杠）
 attachment_path = '/igcom/historical_data_20251117_180148/all_epics_30Min_mid_prices_20251117.xlsx'
 # ------------------------------------------------------------------------
-
 content = '这是用Python脚本发送的Gmail邮件，附带Excel数据附件，请查收！'
 email_server = gmail_config.email_server
-email_port = gmail_config.email_port
+email_port = gmail_config.email_port  # TLS端口（兼容稳定）
 email_title = 'Excel数据附件 - 20251108'
 
 def send_gmail_with_attachment():

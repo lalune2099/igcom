@@ -1,0 +1,8 @@
+.env
+*.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+apikey.txt
+historical_data_*/
+ig_accumulated_1h_data_*.xlsx

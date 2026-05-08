@@ -33,8 +33,6 @@ class IGConfig(object):
     password = _ig_account.password
     api_key = _ig_account.api_key
     acc_type = _ig_account.acc_type  # LIVE=实盘 / DEMO=模拟盘
-    # acc_number = "ABC123"  # 可选，账户号码（v3会话需要时取消注释）
-
 # 核心：Epic与英文名称的映射字典（严格对应你的注释）
 EPIC_TO_NAME = {
     'IX.D.SPTRD.IFMM.IP': 'US 500 Cash ($1)',
@@ -106,12 +104,12 @@ def safe_mid_prices(prices, version):
     return df
 
 def get_multiple_historical_prices(
-    epic_list,
-    resolution='30Min',
+    epic_list, 
+    resolution='30Min', 
     start_date=None,
     end_date=None,
-    days=1,
-    save_individual=True,
+    days=1, 
+    save_individual=True, 
     save_combined=True
 ):
     """
@@ -129,7 +127,7 @@ def get_multiple_historical_prices(
     # 校验时间间隔合法性
     if resolution not in SUPPORTED_RESOLUTIONS:
         raise ValueError(f"Unsupported resolution! Supported options: {SUPPORTED_RESOLUTIONS}")
-
+    
     # 初始化重试机制（应对API限流）
     retryer = Retrying(
         wait=wait_exponential(),  # 指数退避等待（避免频繁请求）
