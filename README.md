@@ -35,6 +35,7 @@
 | `.gitignore` | 忽略 `.env`、`apikey.txt`、缓存和运行输出 |
 | `IG变化率表格(英区).xlsx` | 原始 Excel 模板 |
 | `all.py` / `all2.py` / `all3.py` / `allMon.py` | 主要定时运行脚本 |
+| `monthly_report.py` | 独立生成并发送月度累积公式版变化率表，不影响四个主脚本 |
 | `combine.py`、`for1day.py`、`live.py`、`onlyfor3.py`、`send.py`、`test.py` | 备用或历史辅助脚本，已改为从 `config.py` 读取配置 |
 | `tests/test_config.py` | 配置读取测试 |
 
@@ -45,6 +46,7 @@
 | `outputs/historical_data_*/` | 每次运行的归档目录，保存抓取数据和结果表 |
 | `outputs/historical_data_*/IG变化率_模版更新_YYYYMMDD.xlsx` | 日期更新后的模板 |
 | `outputs/historical_data_*/IG变化率_YYYYMMDD.xlsx` | 最终填好数据的结果表 |
+| `outputs/monthly_reports/IG变化率_YYYYMM_公式版.xlsx` | `monthly_report.py` 生成的月度累积公式版 |
 | `__pycache__/` | Python 缓存 |
 
 ## 配置方式
@@ -145,13 +147,60 @@ python3 /igcom/all3.py
 
 建议定时任务继续使用 `Asia/Shanghai` 时区。四个脚本会按各自默认账号读取 `/igcom/.env`。
 
+## 月度累积公式表
+
+`monthly_report.py` 是新增的独立脚本，用于把已经生成的每日最终表累积成一份月度公式版，不会修改 `all.py`、`all2.py`、`all3.py`、`allMon.py` 的运行逻辑。
+
+它会递归读取：
+
+```text
+/igcom/outputs/**/IG变化率_YYYYMMDD.xlsx
+```
+
+例如：
+
+```text
+/igcom/outputs/historical_data_20260509_040513/IG变化率_20260509.xlsx
+```
+
+生成结果：
+
+```text
+/igcom/outputs/monthly_reports/IG变化率_202605_公式版.xlsx
+```
+
+如果同一天有多份每日表，脚本会按文件修改时间排序后合并，同一天同时间点的数据以后读到的文件为准。通常也就是最新生成的那份为准。
+
+手动生成并发送邮件：
+
+```bash
+cd /igcom
+python3 monthly_report.py
+```
+
+只生成文件、不发送邮件：
+
+```bash
+cd /igcom
+MONTHLY_REPORT_SEND_EMAIL=false python3 monthly_report.py
+```
+
+明确开启邮件：
+
+```bash
+cd /igcom
+MONTHLY_REPORT_SEND_EMAIL=true python3 monthly_report.py
+```
+
+这个脚本适合单独放到云助手白天固定时间运行，用来发送月度累积公式表；晚上原来的变化率表定时任务可以保持不变。
+
 ## 手动运行与检查
 
 服务器上可以先做语法检查：
 
 ```bash
 cd /igcom
-python3 -m py_compile config.py all.py all2.py all3.py allMon.py
+python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py
 ```
 
 确认 `.env` 配置可以正常读取：
