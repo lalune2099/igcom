@@ -36,6 +36,7 @@
 | `IG变化率表格(英区).xlsx` | 原始 Excel 模板 |
 | `all.py` / `all2.py` / `all3.py` / `allMon.py` | 主要定时运行脚本 |
 | `monthly_report.py` | 独立生成并发送月度累积公式版变化率表，不影响四个主脚本 |
+| `backfill_daily.py` | 手工补跑某一天缺失数据的脚本，默认不发送邮件 |
 | `combine.py`、`for1day.py`、`live.py`、`onlyfor3.py`、`send.py`、`test.py` | 备用或历史辅助脚本，已改为从 `config.py` 读取配置 |
 | `tests/test_config.py` | 配置读取测试 |
 
@@ -194,13 +195,59 @@ MONTHLY_REPORT_SEND_EMAIL=true python3 monthly_report.py
 
 这个脚本适合单独放到云助手白天固定时间运行，用来发送月度累积公式表；晚上原来的变化率表定时任务可以保持不变。
 
+## 补跑缺失日期
+
+`backfill_daily.py` 用于手工补某一天缺失的每日表。它不会修改四个主脚本本身，只是在运行时临时模拟一个北京时间，并自动关闭邮件发送。
+
+先编辑脚本顶部：
+
+```python
+BEIJING_TIME = "2026-05-09 04:05:00"
+SCRIPT_MODULE = "all"
+```
+
+字段说明：
+
+| 字段 | 说明 |
+| --- | --- |
+| `BEIJING_TIME` | 要模拟的北京时间，格式必须是 `YYYY-MM-DD HH:MM:SS` |
+| `SCRIPT_MODULE` | 要调用的主脚本，可选 `all`、`all2`、`all3`、`allMon` |
+
+例如要补跑 `2026-05-09 04:05:00` 这次 `all.py` 任务：
+
+```python
+BEIJING_TIME = "2026-05-09 04:05:00"
+SCRIPT_MODULE = "all"
+```
+
+然后运行：
+
+```bash
+cd /igcom
+python3 backfill_daily.py
+```
+
+脚本会自动设置：
+
+```python
+SEND_EMAIL = False
+```
+
+所以补跑时只生成文件，不发邮件。生成的最终表文件名会按模拟日期命名，例如：
+
+```text
+/igcom/outputs/historical_data_20260509_040500/IG变化率_20260509.xlsx
+```
+
+注意：只有真正运行 `python3 backfill_daily.py` 时才会登录 IG 并消耗 API 额度。语法检查、单元测试、上传 GitHub 都不会抓取 IG 数据。
+
 ## 手动运行与检查
 
 服务器上可以先做语法检查：
 
 ```bash
 cd /igcom
-python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py
+python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py backfill_daily.py
 ```
 
 确认 `.env` 配置可以正常读取：
