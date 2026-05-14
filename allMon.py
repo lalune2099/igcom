@@ -673,6 +673,13 @@ def parse_timestamp_label(label: str) -> datetime:
     return date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
+def get_scalar_close(df, ts) -> float:
+    close_value = df.loc[ts, "Close"]
+    if hasattr(close_value, "iloc"):
+        close_value = close_value.iloc[0]
+    return float(close_value)
+
+
 def fill_template_with_close_data(source_file: str, template_file: str, output_file: str):
     """将筛选后的Close数据写入模板"""
     print("======================================")
@@ -763,23 +770,20 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
                     continue
 
                 if ts in df.index:
-                    close_value = df.loc[ts, "Close"]
-                    if hasattr(close_value, "iloc"):
-                        close_value = close_value.iloc[0]
-                    close_value = float(close_value)
+                    close_value = get_scalar_close(df, ts)
 
                     # 18:30用18:00数据
                     if ts.hour == 18 and ts.minute == 30:
                         ts_1800 = ts.replace(minute=0)
                         if ts_1800 in df.index:
-                            close_value = df.loc[ts_1800, "Close"]
+                            close_value = get_scalar_close(df, ts_1800)
                             print(f"    调整：18:30 数据使用 18:00 的 Close 值：{close_value}")
 
                     # 18:00用18:30数据
                     if ts.hour == 18 and ts.minute == 0:
                         ts_1830 = ts.replace(minute=30)
                         if ts_1830 in df.index:
-                            close_value = df.loc[ts_1830, "Close"]
+                            close_value = get_scalar_close(df, ts_1830)
                             print(f"    调整：18:00 数据使用 18:30 的 Close 值：{close_value}")
 
                     ws.cell(row=row, column=col).value = close_value
