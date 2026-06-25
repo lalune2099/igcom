@@ -36,7 +36,7 @@
 | `IG变化率表格(英区).xlsx` | 原始 Excel 模板 |
 | `all.py` / `all2.py` / `all3.py` / `allMon.py` | 主要定时运行脚本 |
 | `monthly_report.py` | 独立生成并发送月度累积公式版变化率表，不影响四个主脚本 |
-| `detailed_monthly_report.py` | 独立生成月度详细版变化率表，按 48 个半小时点分别建子表，不发送邮件 |
+| `detailed_monthly_report.py` | 独立生成并发送月度详细版变化率表，按 48 个半小时点分别建子表 |
 | `backfill_daily.py` | 手工补跑某一天缺失数据的脚本，默认不发送邮件 |
 | `combine.py`、`for1day.py`、`live.py`、`onlyfor3.py`、`send.py`、`test.py` | 备用或历史辅助脚本，已改为从 `config.py` 读取配置 |
 | `tests/test_config.py` | 配置读取测试 |
@@ -199,7 +199,7 @@ MONTHLY_REPORT_SEND_EMAIL=true python3 monthly_report.py
 
 ## 月度详细版公式表
 
-`detailed_monthly_report.py` 是独立脚本，用于读取已经抓取的全量 `1h` 和 `30Min` 数据，并按一天 48 个半小时点生成月度详细版公式表。它只生成文件，不发送邮件。
+`detailed_monthly_report.py` 是独立脚本，用于读取已经抓取的全量 `1h` 和 `30Min` 数据，并按一天 48 个半小时点生成月度详细版公式表。它默认生成后发送邮件，邮件配置沿用 `config.py` 里的 Gmail 配置；如果只想生成文件，可以设置 `DETAILED_MONTHLY_REPORT_SEND_EMAIL=false`。
 
 它会递归读取：
 
@@ -221,11 +221,27 @@ MONTHLY_REPORT_SEND_EMAIL=true python3 monthly_report.py
 
 生成的工作簿包含 `00_00` 到 `23_30` 共 48 个子表。每张子表使用和公式版相同的 49 列结构，`Close` 来自抓取数据，`Change` 和跨产品变化率使用 Excel 公式计算。
 
-手动生成指定月份：
+月报包含哪些日期由详细数据文件名里的 `YYYYMMDD` 决定，不由 `DateTime (London)` 决定。因此周日晚开盘数据即使出现在后续工作日文件中，也不会额外生成没有对应文件的整天行。
+
+手动生成并发送邮件：
 
 ```bash
 cd /igcom
 python3 detailed_monthly_report.py --report-month 202605
+```
+
+只生成文件、不发送邮件：
+
+```bash
+cd /igcom
+DETAILED_MONTHLY_REPORT_SEND_EMAIL=false python3 detailed_monthly_report.py --report-month 202605
+```
+
+明确开启邮件：
+
+```bash
+cd /igcom
+DETAILED_MONTHLY_REPORT_SEND_EMAIL=true python3 detailed_monthly_report.py --report-month 202605
 ```
 
 如需临时指定输入或输出目录：

@@ -122,6 +122,13 @@ def _parse_report_month(report_month: Optional[str]) -> str:
     return month
 
 
+def _date_from_detailed_file(path: Path) -> date:
+    match = DETAILED_FILE_RE.match(path.name)
+    if not match:
+        raise RuntimeError(f"Detailed workbook name must include YYYYMMDD: {path}")
+    return datetime.strptime(match.group(1), "%Y%m%d").date()
+
+
 def _label_product(name) -> Optional[str]:
     text = str(name or "").strip()
     for label, predicate in PRODUCT_LABELS:
@@ -159,6 +166,7 @@ def _extract_records(input_files: Sequence[Path]):
     all_dates = set()
 
     for path in input_files:
+        all_dates.add(_date_from_detailed_file(path))
         wb = load_workbook(path, data_only=True, read_only=True)
         try:
             if DATA_SHEET_NAME not in wb.sheetnames:
@@ -178,7 +186,6 @@ def _extract_records(input_files: Sequence[Path]):
                     continue
                 current_date = dt.date()
                 time_text = dt.strftime("%H:%M")
-                all_dates.add(current_date)
                 records[(current_date, time_text, product)] = _safe_float(row[header_idx[CLOSE_COL]])
         finally:
             wb.close()
@@ -359,20 +366,62 @@ def build_detailed_monthly_report(
     return str(output_path)
 
 
+def build_and_send_detailed_monthly_report(
+    output_root_dir: str = OUTPUT_ROOT_DIR,
+    report_dir: str = MONTHLY_REPORT_DIR,
+    report_month: Optional[str] = None,
+    send_email: bool = True,
+    template_file: str = DEFAULT_TEMPLATE_FILE,
+) -> str:
+    month = _parse_report_month(report_month)
+    output_file = os.path.join(report_dir, f"IG变化率_{month}_详细版.xlsx")
+    report_file = build_detailed_monthly_report(
+        output_root_dir=output_root_dir,
+        report_dir=report_dir,
+        output_file=output_file,
+        report_month=month,
+        template_file=template_file,
+    )
+
+    if send_email:
+        from config import get_gmail_config
+        from monthly_report import send_gmail_with_attachments
+
+        gmail_config = get_gmail_config()
+        sent = send_gmail_with_attachments(
+            send_usr=gmail_config.send_usr,
+            send_pwd=gmail_config.send_pwd,
+            receive_usr_list=gmail_config.receive_usr_list,
+            attachment_paths=[report_file],
+            email_title=f"IG变化率详细版 - {month}",
+            content="这是当天生成的IG变化率月度详细版，请查收。",
+            email_server=gmail_config.email_server,
+            email_port=gmail_config.email_port,
+        )
+        if not sent:
+            raise RuntimeError("Detailed monthly report was generated, but email sending failed")
+
+    return report_file
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build IG detailed monthly 48-half-hour report.")
     parser.add_argument("--report-month", dest="report_month", help="Report month in YYYYMM format.")
     parser.add_argument("--output-root-dir", default=OUTPUT_ROOT_DIR, help="Root directory containing historical_data_* folders.")
     parser.add_argument("--report-dir", default=MONTHLY_REPORT_DIR, help="Directory where monthly reports are saved.")
-    parser.add_argument("--output-file", help="Optional explicit output xlsx path.")
     parser.add_argument("--template-file", default=DEFAULT_TEMPLATE_FILE, help="Workbook used for the two header rows.")
     args = parser.parse_args()
 
-    report_file = build_detailed_monthly_report(
+    send_email_value = os.getenv(
+        "DETAILED_MONTHLY_REPORT_SEND_EMAIL",
+        os.getenv("MONTHLY_REPORT_SEND_EMAIL", "true"),
+    ).strip().lower()
+    send_email = send_email_value not in {"0", "false", "no", "off"}
+    report_file = build_and_send_detailed_monthly_report(
         output_root_dir=args.output_root_dir,
         report_dir=args.report_dir,
-        output_file=args.output_file,
         report_month=args.report_month,
+        send_email=send_email,
         template_file=args.template_file,
     )
     print(f"Detailed monthly report ready: {report_file}")
