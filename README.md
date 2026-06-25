@@ -221,7 +221,7 @@ MONTHLY_REPORT_SEND_EMAIL=true python3 monthly_report.py
 
 生成的工作簿包含 `00_00` 到 `23_30` 共 48 个子表。每张子表使用和公式版相同的 49 列结构，`Close` 来自抓取数据，`Change` 和跨产品变化率使用 Excel 公式计算。
 
-月报包含哪些日期由详细数据文件名里的 `YYYYMMDD` 决定，不由 `DateTime (London)` 决定。因此周日晚开盘数据即使出现在后续工作日文件中，也不会额外生成没有对应文件的整天行。
+月报包含哪些日期由详细数据文件名里的 `YYYYMMDD` 和原始表中的 `DateTime (London)` 共同决定。也就是说，文件夹或文件名对应的日期会保留，周日晚开盘这类只出现在 `DateTime (London)` 里的真实日期也会保留，避免丢失部分跨日数据。
 
 手动生成并发送邮件：
 

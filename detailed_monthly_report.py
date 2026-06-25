@@ -186,6 +186,7 @@ def _extract_records(input_files: Sequence[Path]):
                     continue
                 current_date = dt.date()
                 time_text = dt.strftime("%H:%M")
+                all_dates.add(current_date)
                 records[(current_date, time_text, product)] = _safe_float(row[header_idx[CLOSE_COL]])
         finally:
             wb.close()
