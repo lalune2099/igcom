@@ -36,6 +36,7 @@
 | `IG变化率表格(英区).xlsx` | 原始 Excel 模板 |
 | `all.py` / `all2.py` / `all3.py` / `allMon.py` | 主要定时运行脚本 |
 | `monthly_report.py` | 独立生成并发送月度累积公式版变化率表，不影响四个主脚本 |
+| `detailed_monthly_report.py` | 独立生成月度详细版变化率表，按 48 个半小时点分别建子表，不发送邮件 |
 | `backfill_daily.py` | 手工补跑某一天缺失数据的脚本，默认不发送邮件 |
 | `combine.py`、`for1day.py`、`live.py`、`onlyfor3.py`、`send.py`、`test.py` | 备用或历史辅助脚本，已改为从 `config.py` 读取配置 |
 | `tests/test_config.py` | 配置读取测试 |
@@ -48,6 +49,7 @@
 | `outputs/historical_data_*/IG变化率_模版更新_YYYYMMDD.xlsx` | 日期更新后的模板 |
 | `outputs/historical_data_*/IG变化率_YYYYMMDD.xlsx` | 最终填好数据的结果表 |
 | `outputs/monthly_reports/IG变化率_YYYYMM_公式版.xlsx` | `monthly_report.py` 生成的月度累积公式版 |
+| `outputs/monthly_reports/IG变化率_YYYYMM_详细版.xlsx` | `detailed_monthly_report.py` 生成的 48 个半小时点详细版 |
 | `__pycache__/` | Python 缓存 |
 
 ## 配置方式
@@ -195,6 +197,46 @@ MONTHLY_REPORT_SEND_EMAIL=true python3 monthly_report.py
 
 这个脚本适合单独放到云助手白天固定时间运行，用来发送月度累积公式表；晚上原来的变化率表定时任务可以保持不变。
 
+## 月度详细版公式表
+
+`detailed_monthly_report.py` 是独立脚本，用于读取已经抓取的全量 `1h` 和 `30Min` 数据，并按一天 48 个半小时点生成月度详细版公式表。它只生成文件，不发送邮件。
+
+它会递归读取：
+
+```text
+/igcom/outputs/**/All_Products_Full_1h_30min_YYYYMMDD.xlsx
+```
+
+例如：
+
+```text
+/igcom/outputs/historical_data_20260509_040513/All_Products_Full_1h_30min_20260509.xlsx
+```
+
+生成结果：
+
+```text
+/igcom/outputs/monthly_reports/IG变化率_202605_详细版.xlsx
+```
+
+生成的工作簿包含 `00_00` 到 `23_30` 共 48 个子表。每张子表使用和公式版相同的 49 列结构，`Close` 来自抓取数据，`Change` 和跨产品变化率使用 Excel 公式计算。
+
+手动生成指定月份：
+
+```bash
+cd /igcom
+python3 detailed_monthly_report.py --report-month 202605
+```
+
+如需临时指定输入或输出目录：
+
+```bash
+cd /igcom
+python3 detailed_monthly_report.py --report-month 202605 --output-root-dir /igcom/outputs --report-dir /igcom/outputs/monthly_reports
+```
+
+如果同一天同一时间点有多份详细数据，脚本会按文件修改时间排序后合并，同一产品同一时间点以后读到的文件为准。通常也就是最新生成的那份为准。
+
 ## 补跑缺失日期
 
 `backfill_daily.py` 用于手工补某一天缺失的每日表。它不会修改四个主脚本本身，只是在运行时临时模拟一个北京时间，并自动关闭邮件发送。
@@ -247,7 +289,7 @@ SEND_EMAIL = False
 
 ```bash
 cd /igcom
-python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py backfill_daily.py
+python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py detailed_monthly_report.py backfill_daily.py
 ```
 
 确认 `.env` 配置可以正常读取：
