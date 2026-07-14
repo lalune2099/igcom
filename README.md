@@ -37,6 +37,7 @@
 | `all.py` / `all2.py` / `all3.py` / `allMon.py` | 主要定时运行脚本 |
 | `monthly_report.py` | 独立生成并发送月度累积公式版变化率表，不影响四个主脚本 |
 | `detailed_monthly_report.py` | 独立生成并发送月度详细版变化率表，按 48 个半小时点分别建子表 |
+| `combined_monthly_reports.py` | 一次生成两种月报，并通过一封邮件发送公式版和详细版两个附件 |
 | `backfill_daily.py` | 手工补跑某一天缺失数据的脚本，默认不发送邮件 |
 | `combine.py`、`for1day.py`、`live.py`、`onlyfor3.py`、`send.py`、`test.py` | 备用或历史辅助脚本，已改为从 `config.py` 读取配置 |
 | `tests/test_config.py` | 配置读取测试 |
@@ -253,6 +254,32 @@ python3 detailed_monthly_report.py --report-month 202605 --output-root-dir /igco
 
 如果同一天同一时间点有多份详细数据，脚本会按文件修改时间排序后合并，同一产品同一时间点以后读到的文件为准。通常也就是最新生成的那份为准。
 
+## 一次生成并发送两种月报
+
+`combined_monthly_reports.py` 是统一入口。它会先生成月度累积公式版和月度详细版，确认两份文件都生成成功后，再通过一封邮件发送两个附件。原来的 `monthly_report.py` 和 `detailed_monthly_report.py` 仍然可以单独运行。
+
+生成并发送指定月份的两份月报：
+
+```bash
+cd /igcom
+python3 combined_monthly_reports.py --report-month 202605
+```
+
+只生成两份文件、不发送邮件：
+
+```bash
+cd /igcom
+python3 combined_monthly_reports.py --report-month 202605 --no-email
+```
+
+也可以通过环境变量控制是否发信：
+
+```bash
+COMBINED_MONTHLY_REPORT_SEND_EMAIL=false python3 combined_monthly_reports.py --report-month 202605
+```
+
+如果没有传 `--report-month`，默认处理当前月份。邮件会同时附带公式版和详细版；如果发送失败，脚本会以错误状态退出。
+
 ## 补跑缺失日期
 
 `backfill_daily.py` 用于手工补某一天缺失的每日表。它不会修改四个主脚本本身，只是在运行时临时模拟一个北京时间，并自动关闭邮件发送。
@@ -305,7 +332,7 @@ SEND_EMAIL = False
 
 ```bash
 cd /igcom
-python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py detailed_monthly_report.py backfill_daily.py
+python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py detailed_monthly_report.py combined_monthly_reports.py backfill_daily.py
 ```
 
 确认 `.env` 配置可以正常读取：
