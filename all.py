@@ -11,6 +11,7 @@ Step 5) （可选）Gmail 发送附件（支持多收件人）
 """
 
 import os
+import sys
 import warnings
 import logging
 from datetime import datetime, timedelta
@@ -36,6 +37,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from config import get_gmail_config, get_ig_account
+from cumulative_runs import (
+    find_previous_complete_run,
+    get_incremental_historical_prices,
+    prepare_updated_template,
+)
 
 
 # =============================================================================
@@ -878,14 +884,23 @@ def main():
     else:
         days = 2
 
-    all_data, output_dir_abs, full_excel_abs = get_multiple_historical_prices_full(
-        epic_list=epic_list,
-        start_date=None,
-        end_date=None,
-        days=days,  # 将动态判断的天数传入
-        save_individual=True,
-        save_combined=True,
-    )
+    run_now_beijing = datetime.now(TZ_BEIJING)
+    previous_run = find_previous_complete_run(OUTPUT_ROOT_DIR, RUN_DATE, run_now_beijing)
+    if previous_run is None:
+        all_data, output_dir_abs, full_excel_abs = get_multiple_historical_prices_full(
+            epic_list=epic_list,
+            start_date=None,
+            end_date=None,
+            days=days,
+            save_individual=True,
+            save_combined=True,
+        )
+    else:
+        all_data, output_dir_abs, full_excel_abs = get_incremental_historical_prices(
+            job=sys.modules[__name__],
+            epic_list=epic_list,
+            previous_run=previous_run,
+        )
 
     if not full_excel_abs:
         raise RuntimeError("❌ Step1 未生成合并Excel，无法继续。")
@@ -897,7 +912,11 @@ def main():
     UPDATED_TEMPLATE_FILE = os.path.join(output_dir_abs, UPDATED_TEMPLATE_FILE_NAME)
     FILLED_OUTPUT_FILE = os.path.join(output_dir_abs, FILLED_OUTPUT_FILE_NAME)
 
-    update_template_dates_uk(TEMPLATE_FILE, UPDATED_TEMPLATE_FILE)
+    prepare_updated_template(
+        job=sys.modules[__name__],
+        previous_run=previous_run,
+        output_file=UPDATED_TEMPLATE_FILE,
+    )
 
     # Step 3: 筛选数据
     filtered_excel_abs = os.path.join(output_dir_abs, FILTERED_DATA_EXCEL_NAME)

@@ -14,10 +14,10 @@ from typing import Optional
 
 
 # 只改这里：填要模拟的北京时间，格式必须是 YYYY-MM-DD HH:MM:SS
-BEIJING_TIME = "2026-05-09 04:05:00"
+BEIJING_TIME = "2026-08-18 02:05:00"
 
 # 默认使用 all.py。需要换账号脚本时，可改成 all2、all3、allMon。
-SCRIPT_MODULE = "all"
+SCRIPT_MODULE = "allMon"
 
 VALID_SCRIPT_MODULES = {"all", "all2", "all3", "allMon"}
 BEIJING_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"

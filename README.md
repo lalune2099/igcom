@@ -35,10 +35,6 @@
 | `.gitignore` | 忽略 `.env`、`apikey.txt`、缓存和运行输出 |
 | `IG变化率表格(英区).xlsx` | 原始 Excel 模板 |
 | `all.py` / `all2.py` / `all3.py` / `allMon.py` | 主要定时运行脚本 |
-| `monthly_report.py` | 独立生成并发送月度累积公式版变化率表，不影响四个主脚本 |
-| `detailed_monthly_report.py` | 独立生成并发送月度详细版变化率表，按 48 个半小时点分别建子表 |
-| `combined_monthly_reports.py` | 一次生成两种月报，并通过一封邮件发送公式版和详细版两个附件 |
-| `backfill_daily.py` | 手工补跑某一天缺失数据的脚本，默认不发送邮件 |
 | `combine.py`、`for1day.py`、`live.py`、`onlyfor3.py`、`send.py`、`test.py` | 备用或历史辅助脚本，已改为从 `config.py` 读取配置 |
 | `tests/test_config.py` | 配置读取测试 |
 
@@ -49,8 +45,6 @@
 | `outputs/historical_data_*/` | 每次运行的归档目录，保存抓取数据和结果表 |
 | `outputs/historical_data_*/IG变化率_模版更新_YYYYMMDD.xlsx` | 日期更新后的模板 |
 | `outputs/historical_data_*/IG变化率_YYYYMMDD.xlsx` | 最终填好数据的结果表 |
-| `outputs/monthly_reports/IG变化率_YYYYMM_公式版.xlsx` | `monthly_report.py` 生成的月度累积公式版 |
-| `outputs/monthly_reports/IG变化率_YYYYMM_详细版.xlsx` | `detailed_monthly_report.py` 生成的 48 个半小时点详细版 |
 | `__pycache__/` | Python 缓存 |
 
 ## 配置方式
@@ -151,188 +145,13 @@ python3 /igcom/all3.py
 
 建议定时任务继续使用 `Asia/Shanghai` 时区。四个脚本会按各自默认账号读取 `/igcom/.env`。
 
-## 月度累积公式表
-
-`monthly_report.py` 是新增的独立脚本，用于把已经生成的每日最终表累积成一份月度公式版，不会修改 `all.py`、`all2.py`、`all3.py`、`allMon.py` 的运行逻辑。
-
-它会递归读取：
-
-```text
-/igcom/outputs/**/IG变化率_YYYYMMDD.xlsx
-```
-
-例如：
-
-```text
-/igcom/outputs/historical_data_20260509_040513/IG变化率_20260509.xlsx
-```
-
-生成结果：
-
-```text
-/igcom/outputs/monthly_reports/IG变化率_202605_公式版.xlsx
-```
-
-如果同一天有多份每日表，脚本会按文件修改时间排序后合并，同一天同时间点的数据以后读到的文件为准。通常也就是最新生成的那份为准。
-
-手动生成并发送邮件：
-
-```bash
-cd /igcom
-python3 monthly_report.py
-```
-
-只生成文件、不发送邮件：
-
-```bash
-cd /igcom
-MONTHLY_REPORT_SEND_EMAIL=false python3 monthly_report.py
-```
-
-明确开启邮件：
-
-```bash
-cd /igcom
-MONTHLY_REPORT_SEND_EMAIL=true python3 monthly_report.py
-```
-
-这个脚本适合单独放到云助手白天固定时间运行，用来发送月度累积公式表；晚上原来的变化率表定时任务可以保持不变。
-
-## 月度详细版公式表
-
-`detailed_monthly_report.py` 是独立脚本，用于读取已经抓取的全量 `1h` 和 `30Min` 数据，并按一天 48 个半小时点生成月度详细版公式表。它默认生成后发送邮件，邮件配置沿用 `config.py` 里的 Gmail 配置；如果只想生成文件，可以设置 `DETAILED_MONTHLY_REPORT_SEND_EMAIL=false`。
-
-它会递归读取：
-
-```text
-/igcom/outputs/**/All_Products_Full_1h_30min_YYYYMMDD.xlsx
-```
-
-例如：
-
-```text
-/igcom/outputs/historical_data_20260509_040513/All_Products_Full_1h_30min_20260509.xlsx
-```
-
-生成结果：
-
-```text
-/igcom/outputs/monthly_reports/IG变化率_202605_详细版.xlsx
-```
-
-生成的工作簿包含 `00_00` 到 `23_30` 共 48 个子表。每张子表使用和公式版相同的 49 列结构，`Close` 来自抓取数据，`Change` 和跨产品变化率使用 Excel 公式计算。
-
-月报包含哪些日期由详细数据文件名里的 `YYYYMMDD` 和原始表中的 `DateTime (London)` 共同决定。也就是说，文件夹或文件名对应的日期会保留，周日晚开盘这类只出现在 `DateTime (London)` 里的真实日期也会保留，避免丢失部分跨日数据。
-
-手动生成并发送邮件：
-
-```bash
-cd /igcom
-python3 detailed_monthly_report.py --report-month 202605
-```
-
-只生成文件、不发送邮件：
-
-```bash
-cd /igcom
-DETAILED_MONTHLY_REPORT_SEND_EMAIL=false python3 detailed_monthly_report.py --report-month 202605
-```
-
-明确开启邮件：
-
-```bash
-cd /igcom
-DETAILED_MONTHLY_REPORT_SEND_EMAIL=true python3 detailed_monthly_report.py --report-month 202605
-```
-
-如需临时指定输入或输出目录：
-
-```bash
-cd /igcom
-python3 detailed_monthly_report.py --report-month 202605 --output-root-dir /igcom/outputs --report-dir /igcom/outputs/monthly_reports
-```
-
-如果同一天同一时间点有多份详细数据，脚本会按文件修改时间排序后合并，同一产品同一时间点以后读到的文件为准。通常也就是最新生成的那份为准。
-
-## 一次生成并发送两种月报
-
-`combined_monthly_reports.py` 是统一入口。它会先生成月度累积公式版和月度详细版，确认两份文件都生成成功后，再通过一封邮件发送两个附件。原来的 `monthly_report.py` 和 `detailed_monthly_report.py` 仍然可以单独运行。
-
-生成并发送指定月份的两份月报：
-
-```bash
-cd /igcom
-python3 combined_monthly_reports.py --report-month 202605
-```
-
-只生成两份文件、不发送邮件：
-
-```bash
-cd /igcom
-python3 combined_monthly_reports.py --report-month 202605 --no-email
-```
-
-也可以通过环境变量控制是否发信：
-
-```bash
-COMBINED_MONTHLY_REPORT_SEND_EMAIL=false python3 combined_monthly_reports.py --report-month 202605
-```
-
-如果没有传 `--report-month`，默认处理当前月份。邮件会同时附带公式版和详细版；如果发送失败，脚本会以错误状态退出。
-
-## 补跑缺失日期
-
-`backfill_daily.py` 用于手工补某一天缺失的每日表。它不会修改四个主脚本本身，只是在运行时临时模拟一个北京时间，并自动关闭邮件发送。
-
-先编辑脚本顶部：
-
-```python
-BEIJING_TIME = "2026-05-09 04:05:00"
-SCRIPT_MODULE = "all"
-```
-
-字段说明：
-
-| 字段 | 说明 |
-| --- | --- |
-| `BEIJING_TIME` | 要模拟的北京时间，格式必须是 `YYYY-MM-DD HH:MM:SS` |
-| `SCRIPT_MODULE` | 要调用的主脚本，可选 `all`、`all2`、`all3`、`allMon` |
-
-例如要补跑 `2026-05-09 04:05:00` 这次 `all.py` 任务：
-
-```python
-BEIJING_TIME = "2026-05-09 04:05:00"
-SCRIPT_MODULE = "all"
-```
-
-然后运行：
-
-```bash
-cd /igcom
-python3 backfill_daily.py
-```
-
-脚本会自动设置：
-
-```python
-SEND_EMAIL = False
-```
-
-所以补跑时只生成文件，不发邮件。生成的最终表文件名会按模拟日期命名，例如：
-
-```text
-/igcom/outputs/historical_data_20260509_040500/IG变化率_20260509.xlsx
-```
-
-注意：只有真正运行 `python3 backfill_daily.py` 时才会登录 IG 并消耗 API 额度。语法检查、单元测试、上传 GitHub 都不会抓取 IG 数据。
-
 ## 手动运行与检查
 
 服务器上可以先做语法检查：
 
 ```bash
 cd /igcom
-python3 -m py_compile config.py all.py all2.py all3.py allMon.py monthly_report.py detailed_monthly_report.py combined_monthly_reports.py backfill_daily.py
+python3 -m py_compile config.py all.py all2.py all3.py allMon.py
 ```
 
 确认 `.env` 配置可以正常读取：
