@@ -38,9 +38,12 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from config import get_gmail_config, get_ig_account
 from cumulative_runs import (
+    configure_price_requests,
+    fetch_prices_with_audit,
     find_previous_complete_run,
     get_incremental_historical_prices,
     prepare_updated_template,
+    save_fetch_audit,
 )
 
 
@@ -254,7 +257,7 @@ def safe_sheet_name(name: str) -> str:
     
 #     return df
 
-def safe_mid_prices(prices, version):
+def safe_mid_prices(prices, version, account_timezone=None):
     """
     全方位时区诊断探针版
     """
@@ -288,7 +291,11 @@ def safe_mid_prices(prices, version):
         df = df.set_index("snapshotTime")
         df.index = pd.to_datetime(df.index)
         if df.index.tz is None:
-            df.index = df.index.tz_localize(TZ_UTC)
+            if account_timezone is None:
+                raise ValueError("snapshotTime requires the account timezone when snapshotTimeUTC is missing")
+            df.index = df.index.tz_localize(account_timezone)
+    else:
+        raise ValueError("Historical prices have no timestamp field")
 
     # 统一尝试转换为伦敦时间
     import pytz
@@ -298,7 +305,8 @@ def safe_mid_prices(prices, version):
     df.index.name = "DateTime (London)"
     
     # 计算中间价
-    df["Close"] = df[["closePrice.bid", "closePrice.ask"]].mean(axis=1)
+    df["Close"] = df[["closePrice.bid", "closePrice.ask"]].apply(
+        pd.to_numeric, errors="coerce").mean(axis=1, skipna=False)
 
     # 丢弃多余的列
     drop_cols = [
@@ -314,20 +322,8 @@ def safe_mid_prices(prices, version):
 
 def fetch_data_by_resolution(ig_service, epic: str, resolution: str, start_date_str: str, end_date_str: str) -> pd.DataFrame:
     """按指定粒度抓取单个产品数据，并标注粒度（你的原逻辑）"""
-    try:
-        response = ig_service.fetch_historical_prices_by_epic(
-            epic=epic,
-            resolution=resolution,
-            start_date=start_date_str,
-            end_date=end_date_str,
-            format=safe_mid_prices,
-        )
-        df = response["prices"]
-        df["Resolution"] = resolution
-        return df
-    except Exception as e:
-        logger.warning(f"Failed to fetch {resolution} data for {epic}: {str(e)}")
-        return pd.DataFrame()
+    return fetch_prices_with_audit(
+        ig_service, epic, resolution, start_date_str, end_date_str, safe_mid_prices, logger)
 
 
 def get_multiple_historical_prices_full(
@@ -341,7 +337,7 @@ def get_multiple_historical_prices_full(
     """
     原逻辑保留，修改点：
     1. start_date = 北京时间end_date - N天（已修改：不写死2，用传入的days）
-    2. 直接传北京时间字符串给IG API（ISO8601格式）
+    2. 登录后按账号 timezoneOffset 转换 API 请求时间
     3. 全量1h+30Min、不过滤、标注Resolution、索引转伦敦时间不变
     """
     retryer = Retrying(wait=wait_exponential(), retry=retry_if_exception_type(ApiExceededException))
@@ -375,10 +371,6 @@ def get_multiple_historical_prices_full(
         else:
             start_date = start_date.astimezone(TZ_BEIJING)
 
-    # ========== 直接传北京时间字符串给API（ISO8601格式） ==========
-    start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S")
-    end_date_str = end_date.strftime("%Y-%m-%dT%H:%M:%S")
-
     # 北京时间转伦敦时间/UTC（仅用于日志打印）
     start_date_london = start_date.astimezone(TZ_LONDON)
     end_date_london = end_date.astimezone(TZ_LONDON)
@@ -390,7 +382,6 @@ def get_multiple_historical_prices_full(
     print(f"📅 抓取范围（北京时间）: {start_date.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"📅 Date Range (London): {start_date_london.strftime('%Y-%m-%d %H:%M:%S')} to {end_date_london.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"📅 Date Range (UTC)   : {start_date_utc.strftime('%Y-%m-%d %H:%M:%S')} to {end_date_utc.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📤 API传入时间（北京时间）: start={start_date_str}, end={end_date_str}")
     print(f"📊 Total Products: {len(epic_list)}")
     print("======================================\n")
 
@@ -398,11 +389,13 @@ def get_multiple_historical_prices_full(
     combined_excel_path_abs = None
 
     try:
-        ig_service.create_session()
+        session = ig_service.create_session()
         print("✅ IG Session Created Successfully")
 
         output_dir = os.path.join(OUTPUT_ROOT_DIR, f"historical_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         os.makedirs(output_dir, exist_ok=True)
+        start_date_str, end_date_str = configure_price_requests(
+            ig_service, session, start_date, end_date, output_dir)
         output_dir_abs = os.path.abspath(output_dir)
         print(f"📁 Output Directory (Step1 outputs): {output_dir_abs}")
 
@@ -456,6 +449,7 @@ def get_multiple_historical_prices_full(
 
         if save_combined and combined_data:
             df_combined_all = pd.concat(combined_data, ignore_index=False).sort_index()
+            save_fetch_audit(output_dir, df_combined_all)
 
             combined_csv = os.path.join(output_dir, f"All_Products_Full_1h_30min_{datetime.now().strftime('%Y%m%d')}.csv")
             df_combined_all.to_csv(combined_csv, encoding="utf-8")
@@ -680,10 +674,13 @@ def parse_timestamp_label(label: str) -> datetime:
 
 
 def get_scalar_close(df, ts) -> float:
-    close_value = df.loc[ts, "Close"]
-    if hasattr(close_value, "iloc"):
-        close_value = close_value.iloc[0]
-    return float(close_value)
+    resolution = "30Min" if ts.hour == 18 and ts.minute in (0, 30) else "1h"
+    rows = df.loc[(df.index == ts) & (df["Resolution"] == resolution)]
+    values = pd.to_numeric(rows["Close"], errors="coerce").replace(
+        [float("inf"), -float("inf")], float("nan")).dropna()
+    if values.empty:
+        raise KeyError("Missing valid {} price at {}".format(resolution, ts))
+    return float(values.iloc[-1])
 
 
 def fill_template_with_close_data(source_file: str, template_file: str, output_file: str):
@@ -703,7 +700,8 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
     # 读取源数据
     print("📥 正在读取源数据工作簿……")
     product_data = {}
-    source_sheets = pd.ExcelFile(source_file).sheet_names
+    with pd.ExcelFile(source_file) as source_book:
+        source_sheets = source_book.sheet_names
     print(f"🔍 源文件包含工作表：{source_sheets}")
 
     for header_name, sheet_name in PRODUCT_SHEET_MAP.items():
@@ -773,36 +771,26 @@ def fill_template_with_close_data(source_file: str, template_file: str, output_f
             for col, product_header in col_to_product.items():
                 df = product_data.get(product_header)
                 if df is None:
+                    ws.cell(row=row, column=col).value = None
+                    logger.warning("Missing source product %s at %s; cell cleared", product_header, ts)
                     continue
 
-                if ts in df.index:
-                    close_value = get_scalar_close(df, ts)
-
-                    # 18:30用18:00数据
-                    if ts.hour == 18 and ts.minute == 30:
-                        ts_1800 = ts.replace(minute=0)
-                        if ts_1800 in df.index:
-                            close_value = get_scalar_close(df, ts_1800)
-                            print(f"    调整：18:30 数据使用 18:00 的 Close 值：{close_value}")
-
-                    # 18:00用18:30数据
-                    if ts.hour == 18 and ts.minute == 0:
-                        ts_1830 = ts.replace(minute=30)
-                        if ts_1830 in df.index:
-                            close_value = get_scalar_close(df, ts_1830)
-                            print(f"    调整：18:00 数据使用 18:30 的 Close 值：{close_value}")
-
-                    ws.cell(row=row, column=col).value = close_value
-                    print(
-                        f"    写入 {sheet_name}!{ws.cell(row=row, column=col).coordinate} "
-                        f"<- {product_header} {ts} Close={close_value}"
-                    )
-
-                else:
-                    # 【修改 2】：去掉了 20 时用 19 时代替的 copy 逻辑
-                    print(f"    ⚠ {product_header} 缺少 {ts} 的数据，不写入。")
+                source_ts = ts
+                if ts.hour == 18 and ts.minute in (0, 30):
+                    source_ts = ts.replace(minute=30 if ts.minute == 0 else 0)
+                try:
+                    close_value = get_scalar_close(df, source_ts)
+                except (KeyError, ValueError) as exc:
+                    ws.cell(row=row, column=col).value = None
+                    logger.warning("Missing %s source %s for template %s: %s; cell cleared",
+                                   product_header, source_ts, ts, exc)
+                    continue
+                ws.cell(row=row, column=col).value = close_value
+                print(f"    写入 {sheet_name}!{ws.cell(row=row, column=col).coordinate} "
+                      f"<- {product_header} {ts} source={source_ts} Close={close_value}")
 
     wb.save(output_file)
+    wb.close()
     print(f"\n🎉 Step 4 完成：已保存为 -> {output_file}\n")
     return output_file
 

@@ -28,6 +28,7 @@ DATA_SHEET_NAME = "All_Full_Data"
 DATETIME_COL = "DateTime (London)"
 CLOSE_COL = "Close"
 PRODUCT_COL = "Product Name"
+RESOLUTION_COL = "Resolution"
 
 PRODUCT_LABELS = [
     ("US500", lambda name: "US 500" in name),
@@ -174,12 +175,14 @@ def _extract_records(input_files: Sequence[Path]):
             ws = wb[DATA_SHEET_NAME]
             header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
             header_idx = {name: idx for idx, name in enumerate(header)}
-            required = [DATETIME_COL, CLOSE_COL, PRODUCT_COL]
+            required = [DATETIME_COL, CLOSE_COL, PRODUCT_COL, RESOLUTION_COL]
             missing = [name for name in required if name not in header_idx]
             if missing:
                 raise RuntimeError(f"Workbook missing required columns {missing}: {path}")
 
             for row in ws.iter_rows(min_row=2, values_only=True):
+                if row[header_idx[RESOLUTION_COL]] != "30Min":
+                    continue
                 dt = _coerce_datetime(row[header_idx[DATETIME_COL]])
                 product = _label_product(row[header_idx[PRODUCT_COL]])
                 if dt is None or product is None:
