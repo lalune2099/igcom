@@ -2,6 +2,74 @@
 
 这个仓库用于在服务器定时抓取 IG 金融市场数据，更新变化率 Excel 模板，并按需通过 Gmail 发送结果附件。
 
+## 目录分层与历史累计（2026-10-27）
+
+新运行按北京时间的运行月份保存，Excel 内部仍使用伦敦时间：
+
+```text
+/igcom/outputs/
+├── data/
+│   ├── 202604/
+│   │   └── historical_data_20260430_040513/
+│   └── 202610/
+│       ├── historical_data_20261027_020503/
+│       ├── historical_data_20261027_030503/
+│       └── historical_data_20261027_040503/
+└── monthly_reports/
+    ├── IG变化率_历史累计_公式版.xlsx
+    └── IG变化率_历史累计_详细版.xlsx
+```
+
+- 四个主脚本的运行命令、默认账号、凌晨邮件附件名保持原样。
+- `backfill_daily.py` 复用主脚本，按模拟的北京时间写入对应月份，仍禁止发送邮件。
+- 增量读取同时兼容旧的 `outputs/historical_data_*` 和新的 `outputs/data/YYYYMM/historical_data_*`。只有同时存在原始全量 Excel 与最终日表的前次目录才参与增量复用；这不代表每个品种、时间点均完整。
+- 汇总同时读取新旧位置，按目录名的运行时间排序。同一记录采用较晚运行的有效数字，空值、非数字和无穷值不覆盖已有有效价格。旧文件若没有运行目录名，仍以文件修改时间排序。
+- 不会自动移动、删除服务器的已有目录，也不会根据缺失日期调用 API 补数据。旧月报保留。
+
+白天的云助手任务可以继续执行相同入口，默认生成全部已有日期的历史累计表，一封邮件发送两个附件：
+
+```bash
+python3 /igcom/combined_monthly_reports.py
+```
+
+只生成、不发邮件的检查命令：
+
+```bash
+python3 /igcom/combined_monthly_reports.py --no-email
+```
+
+仍可明确指定某个月，生成原来的月报文件：
+
+```bash
+python3 /igcom/combined_monthly_reports.py --report-month 202610 --no-email
+```
+
+默认读取 `/igcom/outputs/`，输出到 `/igcom/outputs/monthly_reports/`；可用 `--output-root-dir` 和 `--report-dir` 覆盖路径。公式版读取每日变化率表，详细版读取原始表的 `30Min`，所以两份累计表的起止日期取决于各自保留的源文件，可能不同。详细版不会仅因为文件名日期而新增一个没有原始记录的日期。
+
+### 首次建立，之后增量更新
+
+- 第一次读取所有保留的归档，建立两份历史累计表。以后打开同名累计表，只解析新增或发生变化的源文件；通过路径、文件大小和修改时间识别变化。
+- 新日期追加在后面；已有日期在原位置更新，不重复增加行。补入更早的日期时按日期插入，并重新生成受影响行的公式，保持跨日、跨月引用正确。
+- 每个价格记录保留来源优先级，较早运行的归档不能覆盖较新的有效价格；新空值也不清除已有有效值。已经累计的数据不会因为某个源文件被移走而自动删除。
+- 没有源文件变化时，直接复用现有累计表，不重新解析历史 Excel，也不重新保存累计文件；开启邮件时仍发送这一对附件。
+- 保存到临时文件成功后才替换累计表。Excel 的 `.xlsx` 是压缩文件，保存时仍需写出整个工作簿；“增量”指不再每天解析全部历史归档、重建全部数据行，并非只往文件末尾写几个字节。
+
+每份累计表旁会自动生成同名的 `.xlsx.state.json.gz` 处理记录，保存已处理文件及价格来源，不含账号或密码，也不会作为邮件附件。备份或迁移累计表时请一起保留该文件。累计表没有匹配的处理记录（例如旧版首次升级、处理记录丢失、表格被其他程序修改）时，会从现存源归档重新建立，因此原始归档应继续保留。
+
+需要根据现存归档重新核算全部累计数据时，可明确执行：
+
+```bash
+python3 /igcom/combined_monthly_reports.py --rebuild --no-email
+```
+
+`--rebuild` 也会重新读取模板；普通增量更新沿用累计表原有的布局。指定 `--report-month YYYYMM` 时仍按原逻辑重新生成单月报表，不使用历史累计的处理记录。以上命令只读取本地文件，不调用 IG API；是否发送邮件由邮件参数决定。
+
+单独运行 `monthly_report.py` 或 `detailed_monthly_report.py` 仍默认生成当前月。若要发送两份历史累计表，请运行 `combined_monthly_reports.py`。本次不修正旧价格的报价单位、不补齐历史空缺，也不调整冬令时定时安排。
+
+两份历史累计表均保留全部数据与公式，默认只显示各自累计数据中最新的两个日期，较早日期的行自动隐藏。公式版的8个业务工作表和详细版的48个半小时工作表均适用；前两行表头固定显示。这里指最新两个已有日期，不是按电脑日期倒推48小时；不足两天则全部显示。每次更新会调整隐藏范围，隐藏行仍参与公式计算，可在 Excel/WPS 中取消隐藏查看。明确指定 `--report-month` 的月报保留原来的显示方式。
+
+凌晨任务继续发送主脚本生成的每日变化率表（当日与前一交易日的对比）；白天任务运行 `combined_monthly_reports.py`，一封邮件发送截至目前的历史累计公式版和详细版。两条流程不互相替代。
+
 ## 本次更新（2026-10-22）
 
 - 修复请求时区：根据登录会话的账号时区转换请求范围，返回数据统一使用伦敦时间。
@@ -51,7 +119,7 @@
 
 小时线在收盘前可能继续变化，后续运行会用本次有效记录覆盖之前的值。代码不会因为写入过一次就锁定价格。
 
-每次运行仍保存在 `outputs/historical_data_YYYYMMDD_HHMMSS/`，原有 CSV、Excel 文件名和邮件附件保持原样，额外保存：
+每次运行保存在 `outputs/data/YYYYMM/historical_data_YYYYMMDD_HHMMSS/`，原有 CSV、Excel 文件名和邮件附件保持原样，额外保存：
 
 | 新增文件 | 用途 |
 | --- | --- |
@@ -78,17 +146,18 @@
 | `all.py` / `all2.py` / `all3.py` / `allMon.py` | 主要定时运行脚本 |
 | `combine.py`、`for1day.py`、`live.py`、`onlyfor3.py`、`send.py`、`test.py` | 备用或历史辅助脚本，已改为从 `config.py` 读取配置 |
 | `cumulative_runs.py` | 共用的请求时区转换、原始价格留存及增量合并 |
+| `report_sources.py` | 汇总源文件排序、有效价格检查、累计处理记录与安全保存 |
 | `monthly_report.py` | 累积每日变化率表，生成月度公式版 |
 | `detailed_monthly_report.py` | 从原始数据的30Min记录生成月度详细版 |
-| `combined_monthly_reports.py` | 生成两份月报并在同一邮件中发送 |
+| `combined_monthly_reports.py` | 默认生成两份历史累计表并在同一邮件中发送，可指定月份 |
 
 运行时会生成这些文件或目录，不需要提交到 GitHub：
 
 | 运行输出 | 说明 |
 | --- | --- |
-| `outputs/historical_data_*/` | 每次运行的归档目录，保存抓取数据和结果表 |
-| `outputs/historical_data_*/IG变化率_模版更新_YYYYMMDD.xlsx` | 日期更新后的模板 |
-| `outputs/historical_data_*/IG变化率_YYYYMMDD.xlsx` | 最终填好数据的结果表 |
+| `outputs/data/YYYYMM/historical_data_*/` | 每次运行的归档目录，保存抓取数据和结果表 |
+| `outputs/data/YYYYMM/historical_data_*/IG变化率_模版更新_YYYYMMDD.xlsx` | 日期更新后的模板 |
+| `outputs/data/YYYYMM/historical_data_*/IG变化率_YYYYMMDD.xlsx` | 最终填好数据的结果表 |
 | `__pycache__/` | Python 缓存 |
 
 ## 配置方式

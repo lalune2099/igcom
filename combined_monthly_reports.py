@@ -25,15 +25,19 @@ def build_and_send_combined_monthly_reports(
     report_month: Optional[str] = None,
     send_email: bool = True,
     template_file: str = DEFAULT_TEMPLATE_FILE,
+    rebuild: bool = False,
 ) -> Tuple[str, str]:
-    """Build both monthly reports, then send them in one email."""
-    month = _parse_report_month(report_month)
+    """Build all available history by default, or an explicitly selected month."""
+    all_history = report_month is None
+    month = "历史累计" if all_history else _parse_report_month(report_month)
     report_path = Path(report_dir)
 
     formula_file = build_monthly_formula_report(
         output_root_dir=output_root_dir,
         output_file=str(report_path / f"IG变化率_{month}_公式版.xlsx"),
         report_month=month,
+        all_history=all_history,
+        rebuild=rebuild,
     )
     detailed_file = build_detailed_monthly_report(
         output_root_dir=output_root_dir,
@@ -41,6 +45,8 @@ def build_and_send_combined_monthly_reports(
         output_file=str(report_path / f"IG变化率_{month}_详细版.xlsx"),
         report_month=month,
         template_file=template_file,
+        all_history=all_history,
+        rebuild=rebuild,
     )
 
     if send_email:
@@ -52,9 +58,10 @@ def build_and_send_combined_monthly_reports(
             send_pwd=gmail_config.send_pwd,
             receive_usr_list=gmail_config.receive_usr_list,
             attachment_paths=[formula_file, detailed_file],
-            email_title=f"IG变化率月报（公式版+详细版） - {month}",
+            email_title=("IG变化率历史累计（公式版+详细版）" if all_history
+                         else f"IG变化率月报（公式版+详细版） - {month}"),
             content=(
-                "这是当天生成的IG变化率月报，邮件包含月度累计公式版和月度详细版"
+                "这是根据已有归档生成的IG变化率汇总，邮件包含累计公式版和详细版"
                 "两个附件，请查收。"
             ),
             email_server=gmail_config.email_server,
@@ -76,9 +83,11 @@ def _send_email_default() -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build and send the formula and detailed monthly reports."
+        description="Build and send all available history, or one selected month."
     )
-    parser.add_argument("--report-month", help="Report month in YYYYMM format.")
+    parser.add_argument("--report-month", help="Limit to YYYYMM; omitted means all available history.")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="Rebuild cumulative reports and processing state from all retained archives.")
     parser.add_argument(
         "--output-root-dir",
         default=OUTPUT_ROOT_DIR,
@@ -115,6 +124,7 @@ def main() -> None:
         report_month=args.report_month,
         send_email=send_email,
         template_file=args.template_file,
+        rebuild=args.rebuild,
     )
     print(f"Formula monthly report ready: {formula_file}")
     print(f"Detailed monthly report ready: {detailed_file}")

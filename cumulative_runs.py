@@ -152,6 +152,18 @@ def _parse_run_directory_time(path: Path) -> Optional[datetime]:
         return None
 
 
+def get_run_output_directory(output_root_dir, run_time):
+    """Group runs by their Beijing calendar month, including simulated backfills."""
+    beijing = timezone(timedelta(hours=8))
+    if run_time.tzinfo is None:
+        run_time = run_time.replace(tzinfo=beijing)
+    run_time = run_time.astimezone(beijing)
+    return os.path.join(
+        output_root_dir, "data", run_time.strftime("%Y%m"),
+        "historical_data_" + run_time.strftime("%Y%m%d_%H%M%S"),
+    )
+
+
 def find_previous_complete_run(
     output_root_dir: str,
     run_date: str,
@@ -162,12 +174,17 @@ def find_previous_complete_run(
     if not root.exists():
         return None
 
+    if current_time.tzinfo is not None:
+        current_time = current_time.astimezone(timezone(timedelta(hours=8)))
     current_naive = current_time.replace(tzinfo=None)
     combined_name = "All_Products_Full_1h_30min_{}.xlsx".format(run_date)
     final_name = "IG变化率_{}.xlsx".format(run_date)
     candidates = []
 
-    for directory in root.glob("historical_data_{}_*".format(run_date)):
+    pattern = "historical_data_{}_*".format(run_date)
+    directories = list(root.glob(pattern))
+    directories.extend((root / "data" / run_date[:6]).glob(pattern))
+    for directory in directories:
         if not directory.is_dir():
             continue
         run_time = _parse_run_directory_time(directory)
@@ -271,10 +288,7 @@ def get_incremental_historical_prices(job, epic_list, previous_run: PreviousRun)
 
     try:
         session = ig_service.create_session()
-        output_dir = os.path.join(
-            job.OUTPUT_ROOT_DIR,
-            "historical_data_{}".format(job.datetime.now().strftime("%Y%m%d_%H%M%S")),
-        )
+        output_dir = get_run_output_directory(job.OUTPUT_ROOT_DIR, end_date)
         os.makedirs(output_dir, exist_ok=True)
         start_date_str, end_date_str = configure_price_requests(
             ig_service, session, start_date, end_date, output_dir)

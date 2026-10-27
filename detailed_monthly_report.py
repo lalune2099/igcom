@@ -9,6 +9,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from report_sources import (
+    HistoryUpdate, insert_missing_dates, source_sort_key, valid_close, show_latest_two_dates,
+)
 
 
 BASE_DIR = os.getenv("IGCOM_BASE_DIR", "/igcom")
@@ -110,7 +113,7 @@ def collect_detailed_workbooks(output_root_dir: str) -> List[Path]:
         if DETAILED_FILE_RE.match(path.name):
             candidates.append(path)
 
-    return sorted(set(candidates), key=lambda item: (item.stat().st_mtime, str(item)))
+    return sorted(set(candidates), key=source_sort_key)
 
 
 def _parse_report_month(report_month: Optional[str]) -> str:
@@ -167,7 +170,6 @@ def _extract_records(input_files: Sequence[Path]):
     all_dates = set()
 
     for path in input_files:
-        all_dates.add(_date_from_detailed_file(path))
         wb = load_workbook(path, data_only=True, read_only=True)
         try:
             if DATA_SHEET_NAME not in wb.sheetnames:
@@ -190,7 +192,10 @@ def _extract_records(input_files: Sequence[Path]):
                 current_date = dt.date()
                 time_text = dt.strftime("%H:%M")
                 all_dates.add(current_date)
-                records[(current_date, time_text, product)] = _safe_float(row[header_idx[CLOSE_COL]])
+                key = (current_date, time_text, product)
+                value = valid_close(row[header_idx[CLOSE_COL]])
+                if value is not None or key not in records:
+                    records[key] = value
         finally:
             wb.close()
 
@@ -234,9 +239,9 @@ def _row_label(date_obj: date, time_text: str) -> str:
     return f"{date_obj.strftime('%Y/%m/%d')}-{time_text}时Close"
 
 
-def _write_formulas(ws, max_row: int) -> None:
+def _write_formulas(ws, max_row: int, start_row: int = 3) -> None:
     first_data_row = 3
-    for row in range(first_data_row, max_row + 1):
+    for row in range(start_row, max_row + 1):
         for close_col, change_col in DIRECT_CHANGE_BY_CLOSE.items():
             cell = ws.cell(row, change_col)
             if row == first_data_row:
@@ -250,7 +255,7 @@ def _write_formulas(ws, max_row: int) -> None:
             cell.value = None if row == first_data_row else formula_fn(row)
 
 
-def _apply_style(ws, max_row: int, max_col: int = 49) -> None:
+def _apply_style(ws, max_row: int, max_col: int = 49, start_row: int = 1) -> None:
     thin = Side(style="thin", color=GRID)
     medium = Side(style="medium", color=GRID_STRONG)
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -268,7 +273,7 @@ def _apply_style(ws, max_row: int, max_col: int = 49) -> None:
     for col in range(2, max_col + 1):
         ws.column_dimensions[get_column_letter(col)].width = 11 if col in close_cols else 10
 
-    for row in range(1, max_row + 1):
+    for row in range(start_row, max_row + 1):
         for col in range(1, max_col + 1):
             cell = ws.cell(row, col)
             cell.border = header_border if row <= 2 else border
@@ -289,6 +294,8 @@ def _apply_style(ws, max_row: int, max_col: int = 49) -> None:
                 cell.fill = PatternFill("solid", fgColor=HEADER_LIGHT)
             elif row % 2 == 0:
                 cell.fill = PatternFill("solid", fgColor=ROW_ALT)
+            else:
+                cell.fill = PatternFill()
 
             if row >= 3 and col in close_cols:
                 cell.number_format = "0.0000"
@@ -296,12 +303,12 @@ def _apply_style(ws, max_row: int, max_col: int = 49) -> None:
                 cell.number_format = "0.00%"
 
 
-def _shade_blank_cells(ws, max_row: int) -> None:
+def _shade_blank_cells(ws, max_row: int, start_row: int = 3) -> None:
     change_cols = set(DIRECT_CHANGE_BY_CLOSE.values()) | set(DERIVED_FORMULAS)
     close_cols = set(CLOSE_COL_PRODUCT)
     blank_fill = PatternFill("solid", fgColor=BLANK_FILL)
 
-    for row in range(3, max_row + 1):
+    for row in range(start_row, max_row + 1):
         if row == 3:
             for col in change_cols:
                 ws.cell(row, col).fill = blank_fill
@@ -317,9 +324,11 @@ def build_detailed_monthly_report(
     report_month: Optional[str] = None,
     input_files: Optional[Iterable[str]] = None,
     template_file: str = DEFAULT_TEMPLATE_FILE,
+    all_history: bool = False,
+    rebuild: bool = False,
 ) -> str:
     """Build the monthly detailed 48-half-hour formula workbook from full 1h/30Min data."""
-    month = _parse_report_month(report_month)
+    month = "历史累计" if all_history else _parse_report_month(report_month)
     if input_files is None:
         files = collect_detailed_workbooks(output_root_dir)
     else:
@@ -328,13 +337,34 @@ def build_detailed_monthly_report(
     if not files:
         raise RuntimeError("No detailed 1h/30Min workbooks found")
 
-    files = sorted(files, key=lambda item: (item.stat().st_mtime, str(item)))
-    headers = _load_headers(template_file)
-    records, all_dates = _extract_records(files)
-    visible_dates = _visible_dates_for_month(all_dates, month)
+    files = sorted(files, key=source_sort_key)
+    if output_file is None:
+        output_file = os.path.join(report_dir, f"IG变化率_{month}_详细版.xlsx")
+    output_path = Path(output_file)
+    history = HistoryUpdate(output_path, files, output_root_dir, "detailed", rebuild) if all_history else None
+    if history and history.unchanged:
+        print(f"{output_path.name}: no source changes; using existing workbook.")
+        return str(output_path)
+    resume = history is not None and history.resume
+    if resume:
+        wb = load_workbook(output_path)
+        ws = wb.worksheets[0]
+        previous_dates = [datetime.strptime(ws.cell(row, 1).value[:10], "%Y/%m/%d").date()
+                          for row in range(3, ws.max_row + 1)]
+    else:
+        headers = _load_headers(template_file)
+        wb = Workbook()
+        wb.remove(wb.active)
+        previous_dates = []
+    if history:
+        records, source_dates = history.read_changes(lambda path: _extract_records([path]))
+        all_dates = sorted(set(previous_dates) | source_dates)
+    else:
+        records, all_dates = _extract_records(files)
+    if not all_dates:
+        raise RuntimeError("No dated 30Min prices found in source workbooks")
+    visible_dates = all_dates if all_history else _visible_dates_for_month(all_dates, month)
 
-    wb = Workbook()
-    wb.remove(wb.active)
     try:
         wb.calculation.fullCalcOnLoad = True
         wb.calculation.forceFullCalc = True
@@ -342,31 +372,46 @@ def build_detailed_monthly_report(
     except Exception:
         pass
 
+    first_render = insert_missing_dates(wb.worksheets, previous_dates, visible_dates, 1) if resume else 0
     for time_text in _time_points():
-        ws = wb.create_sheet(_sheet_name(time_text))
-        ws.append(headers[0])
-        ws.append(headers[1])
+        if resume:
+            ws = wb[_sheet_name(time_text)]
+        else:
+            ws = wb.create_sheet(_sheet_name(time_text))
+            ws.append(headers[0])
+            ws.append(headers[1])
 
-        for date_obj in visible_dates:
-            row_values = [None] * 49
-            row_values[0] = _row_label(date_obj, time_text)
+        refreshed_rows = set()
+        for date_index, date_obj in enumerate(visible_dates):
+            row_num = 3 + date_index
+            if date_index >= first_render:
+                ws.cell(row_num, 1).value = _row_label(date_obj, time_text)
             for col, product in CLOSE_COL_PRODUCT.items():
-                row_values[col - 1] = records.get((date_obj, time_text, product))
-            ws.append(row_values)
+                key = (date_obj, time_text, product)
+                if key in records:
+                    ws.cell(row_num, col).value = records[key]
+                    refreshed_rows.add(row_num)
 
         max_row = len(visible_dates) + 2
-        _write_formulas(ws, max_row)
-        _apply_style(ws, max_row)
-        _shade_blank_cells(ws, max_row)
+        _write_formulas(ws, max_row, start_row=3 + first_render)
+        _apply_style(ws, max_row, start_row=3 + first_render if resume else 1)
+        _shade_blank_cells(ws, max_row, start_row=3 + first_render)
+        for row_num in sorted(refreshed_rows):
+            if row_num < 3 + first_render:
+                _apply_style(ws, row_num, start_row=row_num)
+                _shade_blank_cells(ws, row_num, start_row=row_num)
+        if all_history:
+            show_latest_two_dates(ws, len(visible_dates), rows_per_date=1)
 
-    if output_file is None:
-        output_file = os.path.join(report_dir, f"IG变化率_{month}_详细版.xlsx")
-
-    output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.active = 0
-    wb.save(output_path)
-    wb.close()
+    try:
+        if history:
+            history.save(wb)
+        else:
+            wb.save(output_path)
+    finally:
+        wb.close()
     return str(output_path)
 
 

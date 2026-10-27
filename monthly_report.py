@@ -12,6 +12,9 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
+from report_sources import (
+    HistoryUpdate, insert_missing_dates, source_sort_key, valid_close, show_latest_two_dates,
+)
 
 
 BASE_DIR = os.getenv("IGCOM_BASE_DIR", "/igcom")
@@ -49,7 +52,7 @@ def collect_daily_workbooks(output_root_dir: str) -> List[Path]:
         if DAILY_FILE_RE.match(path.name):
             candidates.append(path)
 
-    return sorted(set(candidates), key=lambda item: (item.stat().st_mtime, str(item)))
+    return sorted(set(candidates), key=source_sort_key)
 
 
 def _copy_cell_style(src, dst) -> None:
@@ -128,8 +131,8 @@ def _extract_records(input_files: Sequence[Path], sheet_info):
         try:
             for idx in TIME_SHEET_IDXS:
                 ws = wb.worksheets[idx]
-                for row in range(3, ws.max_row + 1):
-                    raw_label = ws.cell(row, 1).value
+                for row in ws.iter_rows(min_row=3, values_only=True):
+                    raw_label = row[0]
                     if not raw_label:
                         continue
                     match = LABEL_RE.match(str(raw_label).strip())
@@ -142,7 +145,10 @@ def _extract_records(input_files: Sequence[Path], sheet_info):
                     records[idx].setdefault(date_obj, {}).setdefault(time_part, {})
 
                     for col in sheet_info[idx]["close_cols"]:
-                        records[idx][date_obj][time_part][col] = ws.cell(row, col).value
+                        value = valid_close(row[col - 1] if col <= len(row) else None)
+                        prices = records[idx][date_obj][time_part]
+                        if value is not None or col not in prices:
+                            prices[col] = value
         finally:
             wb.close()
 
@@ -207,9 +213,11 @@ def build_monthly_formula_report(
     output_file: Optional[str] = None,
     report_month: Optional[str] = None,
     input_files: Optional[Iterable[str]] = None,
+    all_history: bool = False,
+    rebuild: bool = False,
 ) -> str:
     """Build the monthly cumulative formula workbook from generated daily workbooks."""
-    month = _parse_report_month(report_month)
+    month = "历史累计" if all_history else _parse_report_month(report_month)
     if input_files is None:
         files = collect_daily_workbooks(output_root_dir)
     else:
@@ -218,9 +226,18 @@ def build_monthly_formula_report(
     if not files:
         raise RuntimeError("No daily workbooks found")
 
-    files = sorted(files, key=lambda item: (item.stat().st_mtime, str(item)))
-    style_wb = load_workbook(files[-1], data_only=False)
-    out_wb = load_workbook(files[-1], data_only=False)
+    files = sorted(files, key=source_sort_key)
+    if output_file is None:
+        output_file = os.path.join(MONTHLY_REPORT_DIR, f"IG变化率_{month}_公式版.xlsx")
+    output_path = Path(output_file)
+    history = HistoryUpdate(output_path, files, output_root_dir, "formula", rebuild) if all_history else None
+    if history and history.unchanged:
+        print(f"{output_path.name}: no source changes; using existing workbook.")
+        return str(output_path)
+    resume = history is not None and history.resume
+    style_path = output_path if resume else files[-1]
+    style_wb = load_workbook(style_path, data_only=False)
+    out_wb = load_workbook(style_path, data_only=False)
     try:
         out_wb.calculation.fullCalcOnLoad = True
         out_wb.calculation.forceFullCalc = True
@@ -229,8 +246,32 @@ def build_monthly_formula_report(
         pass
 
     sheet_info = _extract_sheet_info(style_wb)
-    records, all_dates = _extract_records(files, sheet_info)
-    visible_dates = _visible_dates_for_month(all_dates, month)
+    previous_dates = []
+    if resume:
+        ws = out_wb.worksheets[0]
+        previous_dates = [datetime.strptime(LABEL_RE.match(ws.cell(row, 1).value).group(1),
+                                            "%Y/%m/%d").date()
+                          for row in range(3, ws.max_row + 1, 6)]
+    if history:
+        def read_source(path):
+            source_records, source_dates = _extract_records([path], sheet_info)
+            flat = {(day, idx, time_str, col): value
+                    for idx, day_records in source_records.items()
+                    for day, time_records in day_records.items()
+                    for time_str, prices in time_records.items()
+                    for col, value in prices.items()}
+            return flat, source_dates
+
+        changes, changed_dates = history.read_changes(read_source)
+        records = {idx: {} for idx in TIME_SHEET_IDXS}
+        for (day, idx, time_str, col), value in changes.items():
+            records[idx].setdefault(day, {}).setdefault(time_str, {})[col] = value
+        all_dates = sorted(set(previous_dates) | changed_dates)
+    else:
+        records, all_dates = _extract_records(files, sheet_info)
+    if not all_dates:
+        raise RuntimeError("No dated prices found in daily workbooks")
+    visible_dates = all_dates if all_history else _visible_dates_for_month(all_dates, month)
     prev_date_by_date = {
         all_dates[idx]: all_dates[idx - 1]
         for idx in range(1, len(all_dates))
@@ -240,15 +281,19 @@ def build_monthly_formula_report(
     for sheet_idx, ws in enumerate(style_wb.worksheets[:8]):
         row_styles[sheet_idx] = []
         for offset in range(6):
-            ref_row = 9 + offset
+            ref_row = (3 if resume else 9) + offset
             row_styles[sheet_idx].append({
                 "height": ws.row_dimensions[ref_row].height,
                 "cells": [ws.cell(ref_row, col) for col in range(1, ws.max_column + 1)],
             })
 
-    for ws in out_wb.worksheets:
-        if ws.max_row > 2:
-            ws.delete_rows(3, ws.max_row - 2)
+    if resume:
+        first_render = insert_missing_dates(out_wb.worksheets[:8], previous_dates, visible_dates, 6)
+    else:
+        first_render = 0
+        for ws in out_wb.worksheets:
+            if ws.max_row > 2:
+                ws.delete_rows(3, ws.max_row - 2)
 
     add_ref_row = _build_formula_refs_sheet(
         out_wb,
@@ -288,7 +333,16 @@ def build_monthly_formula_report(
         ws = out_wb.worksheets[idx]
         info = sheet_info[idx]
         style_ws = style_wb.worksheets[idx]
+        # Price refreshes may affect existing blocks before the newly inserted dates.
+        if resume:
+            date_positions = {day: position for position, day in enumerate(visible_dates)}
+            for day, time_records in records[idx].items():
+                for offset, time_str in enumerate(TIME_ROWS[idx]):
+                    for col, value in time_records.get(time_str, {}).items():
+                        ws.cell(3 + date_positions[day] * 6 + offset, col).value = value
         for date_index, date_obj in enumerate(visible_dates):
+            if date_index < first_render:
+                continue
             block_start = 3 + date_index * 6
             date_label = date_obj.strftime("%Y/%m/%d")
             for row_type_idx, time_str in enumerate(TIME_ROWS[idx]):
@@ -297,7 +351,8 @@ def build_monthly_formula_report(
                 ws.cell(row_num, 1).value = f"{date_label}-{time_str}时Close"
 
                 for close_col in info["close_cols"]:
-                    ws.cell(row_num, close_col).value = close_value(idx, date_obj, time_str, close_col)
+                    if not resume or close_col in records[idx].get(date_obj, {}).get(time_str, {}):
+                        ws.cell(row_num, close_col).value = close_value(idx, date_obj, time_str, close_col)
 
                 for close_col, change_col in info["direct_change_by_close"].items():
                     denominator = denominator_ref(idx, date_index, row_type_idx, close_col, block_start)
@@ -308,7 +363,7 @@ def build_monthly_formula_report(
                     else:
                         ws.cell(row_num, change_col).value = None
 
-                pattern_row = 9 + row_type_idx
+                pattern_row = (3 if resume else 9) + row_type_idx
                 for col in info["derived_cols"]:
                     ws.cell(row_num, col).value = _same_row_formula(style_ws.cell(pattern_row, col).value, row_num)
 
@@ -317,6 +372,8 @@ def build_monthly_formula_report(
         time_ws = out_wb.worksheets[idx]
         info = sheet_info[idx]
         for date_index, date_obj in enumerate(visible_dates):
+            if date_index < first_render:
+                continue
             block_start = 3 + date_index * 6
             date_label = date_obj.strftime("%Y/%m/%d")
             for row_type_idx in range(6):
@@ -324,7 +381,7 @@ def build_monthly_formula_report(
                 _apply_row_style(change_ws, row_styles[CHANGE_SHEET_OFFSET + idx], row_num, row_type_idx)
                 change_ws.cell(row_num, 1).value = date_label if row_type_idx == 0 else None
                 # Preserve the Time labels from the latest daily workbook.
-                change_ws.cell(row_num, 2).value = style_wb.worksheets[CHANGE_SHEET_OFFSET + idx].cell(9 + row_type_idx, 2).value
+                change_ws.cell(row_num, 2).value = style_wb.worksheets[CHANGE_SHEET_OFFSET + idx].cell((3 if resume else 9) + row_type_idx, 2).value
 
                 for col in range(3, change_ws.max_column + 1):
                     header = change_ws.cell(1, col).value
@@ -336,15 +393,20 @@ def build_monthly_formula_report(
                     else:
                         change_ws.cell(row_num, col).value = None
 
-    if output_file is None:
-        output_file = os.path.join(MONTHLY_REPORT_DIR, f"IG变化率_{month}_公式版.xlsx")
+    if all_history:
+        for ws in out_wb.worksheets[:8]:
+            show_latest_two_dates(ws, len(visible_dates), rows_per_date=6)
 
-    output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     out_wb.active = 0
-    out_wb.save(output_path)
-    style_wb.close()
-    out_wb.close()
+    try:
+        if history:
+            history.save(out_wb)
+        else:
+            out_wb.save(output_path)
+    finally:
+        style_wb.close()
+        out_wb.close()
     return str(output_path)
 
 

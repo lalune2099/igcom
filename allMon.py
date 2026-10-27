@@ -42,6 +42,7 @@ from cumulative_runs import (
     fetch_prices_with_audit,
     find_previous_complete_run,
     get_incremental_historical_prices,
+    get_run_output_directory,
     prepare_updated_template,
     save_fetch_audit,
 )
@@ -56,7 +57,7 @@ BASE_DIR = "/igcom"
 
 # 运行输出目录：抓取数据、更新模板、最终结果都放这里
 OUTPUT_ROOT_DIR = os.path.join(BASE_DIR, "outputs")
-RUN_DATE = datetime.now().strftime("%Y%m%d")
+RUN_DATE = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y%m%d")
 
 # 模板原文件（未改日期，保留在 /igcom 根目录）
 TEMPLATE_FILE = os.path.join(BASE_DIR, "IG变化率表格(英区).xlsx")
@@ -392,7 +393,7 @@ def get_multiple_historical_prices_full(
         session = ig_service.create_session()
         print("✅ IG Session Created Successfully")
 
-        output_dir = os.path.join(OUTPUT_ROOT_DIR, f"historical_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        output_dir = get_run_output_directory(OUTPUT_ROOT_DIR, datetime.now(TZ_BEIJING))
         os.makedirs(output_dir, exist_ok=True)
         start_date_str, end_date_str = configure_price_requests(
             ig_service, session, start_date, end_date, output_dir)
