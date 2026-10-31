@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import os
 import re
+import sys
+import time
+import traceback
 from copy import copy
 from datetime import datetime
 from email.mime.application import MIMEApplication
@@ -419,6 +422,7 @@ def send_gmail_with_attachments(
     content: str,
     email_server: str = "smtp.gmail.com",
     email_port: int = 587,
+    smtp_timeout: float = 180,
 ) -> bool:
     """Send one Gmail message with one or more attachments."""
     paths = [str(path) for path in attachment_paths]
@@ -448,17 +452,47 @@ def send_gmail_with_attachments(
         msg.attach(attachment)
         print(f"Attached: {os.path.basename(path)}")
 
+    smtp = None
+    accepted = False
+    stage = "encode"
+    started = time.monotonic()
     try:
-        smtp = SMTP(email_server, email_port, timeout=30)
+        payload = msg.as_string()
+        stage = "connect"
+        print(f"Email SMTP stage={stage}, timeout={smtp_timeout}s", flush=True)
+        smtp = SMTP(email_server, email_port, timeout=smtp_timeout)
+        stage = "starttls"
+        print(f"Email SMTP stage={stage}", flush=True)
         smtp.starttls()
+        stage = "login"
+        print(f"Email SMTP stage={stage}", flush=True)
         smtp.login(send_usr, send_pwd)
-        smtp.sendmail(send_usr, receive_usr_list, msg.as_string())
-        smtp.quit()
+        stage = "sendmail"
+        print(f"Email SMTP stage={stage}", flush=True)
+        refused = smtp.sendmail(send_usr, receive_usr_list, payload)
+        accepted = True
+        if refused:
+            print(f"Email partially accepted: {len(refused)} recipient(s) refused; no automatic retry.",
+                  flush=True)
+            return False
         print("Email sent successfully.")
         return True
     except Exception as exc:
-        print(f"Email failed: {exc}")
+        elapsed = time.monotonic() - started
+        print(f"Email failed: stage={stage}, elapsed={elapsed:.2f}s, "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exc(file=sys.stdout)
         return False
+    finally:
+        if smtp is not None:
+            try:
+                if accepted:
+                    smtp.quit()
+            except Exception as exc:
+                print(f"Email cleanup warning (message already accepted): "
+                      f"{type(exc).__name__}: {exc}", flush=True)
+            finally:
+                smtp.close()
 
 
 def build_and_send_monthly_report(
